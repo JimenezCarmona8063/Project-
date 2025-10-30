@@ -1,4 +1,5 @@
 # game/entities.py
+import math
 import random
 from collections import deque
 from typing import Callable, Iterable, Optional, Tuple
@@ -55,13 +56,53 @@ class Entity:
         pass
 
     def draw(self, surf, camera):
-        pygame.draw.rect(surf, self.color, camera.apply(self.rect))
+        screen_rect = camera.apply(self.rect)
+        shadow = screen_rect.inflate(6, 12)
+        shadow.x += 2
+        shadow.y += 6
+        pygame.draw.ellipse(surf, (0, 0, 0, 90), shadow)
+
+        body = pygame.Surface(screen_rect.size, pygame.SRCALPHA)
+        rect = body.get_rect()
+        if rect.width <= 0 or rect.height <= 0:
+            return
+        top_color = tuple(min(255, c + 45) for c in self.color)
+        bottom_color = tuple(max(0, c - 35) for c in self.color)
+        for y in range(rect.height):
+            t = y / max(1, rect.height - 1)
+            r = int(top_color[0] * (1 - t) + bottom_color[0] * t)
+            g = int(top_color[1] * (1 - t) + bottom_color[1] * t)
+            b = int(top_color[2] * (1 - t) + bottom_color[2] * t)
+            pygame.draw.line(body, (r, g, b, 245), (0, y), (rect.width, y))
+        radius = max(8, min(rect.width, rect.height) // 2)
+        mask = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(mask, (255, 255, 255, 255), rect, border_radius=radius)
+        body.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        inner = rect.inflate(-4, -4)
+        if inner.width > 0 and inner.height > 0:
+            pygame.draw.rect(body, (255, 255, 255, 40), inner, width=1, border_radius=max(4, radius - 2))
+        pygame.draw.rect(body, (12, 16, 22, 200), rect, width=2, border_radius=radius)
+
+        surf.blit(body, screen_rect)
+
+        eye_radius = max(3, rect.width // 6)
+        if self._dir == "up":
+            eye_pos = (screen_rect.centerx, screen_rect.y + 6)
+        elif self._dir == "down":
+            eye_pos = (screen_rect.centerx, screen_rect.bottom - 6)
+        elif self._dir == "left":
+            eye_pos = (screen_rect.x + 6, screen_rect.centery)
+        else:
+            eye_pos = (screen_rect.right - 6, screen_rect.centery)
+        pygame.draw.circle(surf, (250, 250, 255), eye_pos, eye_radius)
+        pygame.draw.circle(surf, (40, 44, 64), eye_pos, max(1, eye_radius // 2))
 
 
 class Character(Entity):
     """Extiende Entity con datos de clase, compatibilidad y acciones asignadas."""
 
     NAME_FONT: Optional[pygame.font.Font] = None
+    FEEDBACK_FONT: Optional[pygame.font.Font] = None
 
     def __init__(
         self,
@@ -109,6 +150,12 @@ class Character(Entity):
             cls.NAME_FONT = pygame.font.SysFont("arial", 14, bold=True)
         return cls.NAME_FONT
 
+    @classmethod
+    def _feedback_font(cls):
+        if cls.FEEDBACK_FONT is None and pygame.font.get_init():
+            cls.FEEDBACK_FONT = pygame.font.SysFont("arial", 13, bold=True)
+        return cls.FEEDBACK_FONT
+
     def can_perform(self, action) -> bool:
         required = getattr(action, "required_aptitudes", set())
         compat = getattr(action, "compatibility", set())
@@ -146,6 +193,37 @@ class Character(Entity):
         self.action_feedback = feedback
         self.feedback_timer = 2.0
         self.hp = min(self.max_hp, self.hp + 1.5)
+
+    def draw(self, surf, camera):
+        if hasattr(self, "visible") and not getattr(self, "visible", True):
+            return
+        super().draw(surf, camera)
+        screen_rect = camera.apply(self.rect)
+        font = self._name_font()
+        if font and self.name:
+            label_text = font.render(self.name, True, (235, 240, 255))
+            label_box = pygame.Surface((label_text.get_width() + 10, label_text.get_height() + 6), pygame.SRCALPHA)
+            pygame.draw.rect(label_box, (18, 22, 34, 210), label_box.get_rect(), border_radius=8)
+            pygame.draw.rect(label_box, (86, 120, 182, 235), label_box.get_rect(), width=1, border_radius=8)
+            label_box.blit(label_text, (5, 3))
+            surf.blit(label_box, (screen_rect.centerx - label_box.get_width() // 2, screen_rect.y - label_box.get_height() - 6))
+
+        progress = self.action_progress()
+        if progress > 0:
+            ring_rect = screen_rect.inflate(18, 18)
+            start_angle = -math.pi / 2
+            end_angle = start_angle + progress * math.tau
+            pygame.draw.arc(surf, (220, 250, 200), ring_rect, start_angle, end_angle, 4)
+            pygame.draw.arc(surf, (60, 80, 46), ring_rect, start_angle, start_angle + math.tau, 1)
+
+        if self.feedback_timer > 0 and self.action_feedback:
+            feedback_font = self._feedback_font()
+            if feedback_font:
+                text = feedback_font.render(self.action_feedback, True, (250, 250, 200))
+                bg = pygame.Surface((text.get_width() + 8, text.get_height() + 4), pygame.SRCALPHA)
+                pygame.draw.rect(bg, (24, 34, 48, 220), bg.get_rect(), border_radius=6)
+                bg.blit(text, (4, 2))
+                surf.blit(bg, (screen_rect.centerx - bg.get_width() // 2, screen_rect.bottom + 6))
 
     def request_interaction(self, target, duration: float = 3.5) -> None:
         if callable(target):
@@ -487,6 +565,35 @@ class Item(Entity):
     def picked(self, player):
         player.inventory.append(self.item_id)
         self.dead = True
+
+    def draw(self, surf, camera):
+        screen_rect = camera.apply(self.rect)
+        glow_rect = screen_rect.inflate(18, 18)
+        pygame.draw.ellipse(surf, (40, 120, 60, 120), glow_rect)
+        gem = pygame.Surface(screen_rect.size, pygame.SRCALPHA)
+        w, h = gem.get_size()
+        pygame.draw.polygon(
+            gem,
+            (140, 220, 160, 240),
+            [
+                (w // 2, 0),
+                (w, h // 2),
+                (w // 2, h),
+                (0, h // 2),
+            ],
+        )
+        pygame.draw.polygon(
+            gem,
+            (24, 70, 36, 240),
+            [
+                (w // 2, 2),
+                (w - 2, h // 2),
+                (w // 2, h - 2),
+                (2, h // 2),
+            ],
+            width=2,
+        )
+        surf.blit(gem, screen_rect)
 
 
 class AICharacter(Character):

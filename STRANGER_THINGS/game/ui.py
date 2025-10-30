@@ -19,6 +19,54 @@ from settings import (
     KEY_MESSAGE,
 )
 
+
+def draw_interaction_bubble(surface, pos, text, font=None, accent=(120, 180, 255)):
+    if not text:
+        return
+    if font is None:
+        font = pygame.font.SysFont("arial", 16, bold=True)
+    text_surf = font.render(text, True, (16, 22, 32))
+    padding_x, padding_y = 14, 10
+    body_w = text_surf.get_width() + padding_x * 2
+    body_h = text_surf.get_height() + padding_y * 2
+    tail_h = 12
+    bubble = pygame.Surface((body_w, body_h + tail_h), pygame.SRCALPHA)
+    pygame.draw.rect(
+        bubble,
+        (245, 248, 255, 235),
+        pygame.Rect(0, 0, body_w, body_h),
+        border_radius=16,
+    )
+    pygame.draw.rect(
+        bubble,
+        (*accent, 255),
+        pygame.Rect(0, 0, body_w, body_h),
+        width=2,
+        border_radius=16,
+    )
+    tail_points = [
+        (body_w // 2 - 12, body_h - 1),
+        (body_w // 2 + 12, body_h - 1),
+        (body_w // 2, body_h + tail_h),
+    ]
+    pygame.draw.polygon(bubble, (245, 248, 255, 235), tail_points)
+    pygame.draw.lines(bubble, (*accent, 255), False, tail_points, 2)
+    shadow = pygame.Surface(bubble.get_size(), pygame.SRCALPHA)
+    pygame.draw.rect(
+        shadow,
+        (0, 0, 0, 90),
+        pygame.Rect(4, 6, body_w, body_h),
+        border_radius=16,
+    )
+    pygame.draw.polygon(
+        shadow,
+        (0, 0, 0, 90),
+        [(p[0] + 4, p[1] + 6) for p in tail_points],
+    )
+    surface.blit(shadow, (pos[0] - bubble.get_width() // 2 + 2, pos[1] - bubble.get_height() - 2))
+    surface.blit(bubble, (pos[0] - bubble.get_width() // 2, pos[1] - bubble.get_height()))
+    bubble.blit(text_surf, (padding_x, padding_y - 2))
+
 class Button:
     def __init__(self, rect, text, font, on_click, bg=(40,40,40), bg_hover=(60,60,60), fg=(255,255,255), hover_sound=None):
         self.rect = pygame.Rect(rect)

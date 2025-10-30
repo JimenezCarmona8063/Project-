@@ -23,6 +23,7 @@ from game.ui import (
     Slider,
     DecisionPrompt,
     ChatWindow,
+    draw_interaction_bubble,
 )
 
 from game.entities import (
@@ -84,6 +85,7 @@ class PlayScene(Scene):
         self.map_view = pygame.Rect(self.panel_width, 0, map_w, map_h)
         self.action_feed_rect = pygame.Rect(self.panel_width, self.map_view.bottom, map_w, self.bottom_feed_height)
         self._map_buffer = pygame.Surface((self.camera.screen_w, self.camera.screen_h), pygame.SRCALPHA)
+        self._rebuild_map_backdrop()
 
 
         # 3) Player en el spawn del TMX
@@ -272,6 +274,11 @@ class PlayScene(Scene):
         self.minimap_scale = 0.12
         self.minimap_base = self._build_minimap_surface()
         self.minimap_rect = self.minimap_base.get_rect() if self.minimap_base else pygame.Rect(0, 0, 0, 0)
+        self.map_backdrop: Optional[pygame.Surface] = None
+        self.interaction_hint: Optional[dict[str, object]] = None
+        self.interaction_font = load_ui_font(16)
+        if self.interaction_font is None:
+            self.interaction_font = pygame.font.SysFont("arial", 16, bold=True)
 
     def _build_minimap_surface(self) -> pygame.Surface:
         world_w, world_h = self.map.world_size()
@@ -296,6 +303,33 @@ class PlayScene(Scene):
         pygame.draw.rect(base, (22, 30, 42, 220), base.get_rect(), width=2, border_radius=8)
         return base
 
+    def _rebuild_map_backdrop(self) -> None:
+        if self._map_buffer is None:
+            self.map_backdrop = None
+            return
+        width, height = self._map_buffer.get_size()
+        if width <= 0 or height <= 0:
+            self.map_backdrop = None
+            return
+        gradient = pygame.Surface((width, height), pygame.SRCALPHA)
+        top = pygame.Color(26, 30, 44, 255)
+        bottom = pygame.Color(14, 16, 26, 255)
+        for y in range(height):
+            t = y / max(1, height - 1)
+            r = int(top.r * (1 - t) + bottom.r * t)
+            g = int(top.g * (1 - t) + bottom.g * t)
+            b = int(top.b * (1 - t) + bottom.b * t)
+            pygame.draw.line(gradient, (r, g, b, 255), (0, y), (width, y))
+        vignette = pygame.Surface((width, height), pygame.SRCALPHA)
+        pygame.draw.ellipse(
+            vignette,
+            (0, 0, 0, 120),
+            (-width * 0.25, height * 0.4, width * 1.5, height * 1.2),
+        )
+        gradient.blit(vignette, (0, 0), special_flags=pygame.BLEND_RGBA_SUB)
+        pygame.draw.rect(gradient, (255, 255, 255, 30), gradient.get_rect(), width=2, border_radius=24)
+        self.map_backdrop = gradient
+
     def _ensure_map_surfaces(self, surface: pygame.Surface) -> None:
         map_width = max(320, surface.get_width() - self.panel_width)
         map_height = max(240, surface.get_height() - self.bottom_feed_height)
@@ -313,6 +347,11 @@ class PlayScene(Scene):
             self.camera.screen_h = buffer_h
             self.camera.clamp()
             self._map_buffer = pygame.Surface((buffer_w, buffer_h), pygame.SRCALPHA)
+            self._rebuild_map_backdrop()
+
+    def _draw_map_backdrop(self, surface: pygame.Surface) -> None:
+        if self.map_backdrop:
+            surface.blit(self.map_backdrop, (0, 0))
 
     def _push_action_prompt(
         self,
@@ -717,13 +756,15 @@ class PlayScene(Scene):
             near = self._nearest_specialist()
             if near:
                 self._set_message(f"{near.name}: {near.status_text()}", 0.5)
+        self._update_interaction_hint()
 
     def draw(self, surface):
         surface.fill((12, 14, 22))
         self._ensure_map_surfaces(surface)
         self.camera.center_on(self.player.rect)
         map_buffer = self._map_buffer
-        map_buffer.fill((18, 20, 28, 255))
+        map_buffer.fill((0, 0, 0, 0))
+        self._draw_map_backdrop(map_buffer)
         self.map.draw(map_buffer, self.camera)
         for it in self.items:
             it.draw(map_buffer, self.camera)
@@ -734,15 +775,18 @@ class PlayScene(Scene):
         for e in self.enemies:
             e.draw(map_buffer, self.camera)
         self.player.draw(map_buffer, self.camera)
+        self._draw_interaction_hint(map_buffer)
         self._draw_activity_markers(map_buffer)
         scaled_map = pygame.transform.smoothscale(map_buffer, self.map_view.size)
         surface.blit(scaled_map, self.map_view.topleft)
+        pygame.draw.rect(surface, (18, 22, 34), self.map_view, width=3, border_radius=18)
         self._draw_minimap(surface)
         max_scroll = draw_hud(surface, self.player, self.decision_status, self.player_tasks, scroll_offset=self.hud_scroll)
         self.hud_scroll_max = max_scroll
         if self.hud_scroll > self.hud_scroll_max:
             self.hud_scroll = self.hud_scroll_max
         draw_action_feed(surface, self.action_feed_rect, self.action_prompts, list(self.action_history), controls_hint=self.controls_hint)
+        pygame.draw.rect(surface, (18, 22, 34), self.action_feed_rect, width=2, border_radius=16)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
         if self.chat_window:
@@ -1265,6 +1309,72 @@ class PlayScene(Scene):
             bg.fill((12, 16, 24, 170))
             surface.blit(bg, (screen_rect.x - 2, screen_rect.y - 28))
             surface.blit(text_surf, (screen_rect.x + 1, screen_rect.y - 26))
+
+    def _update_interaction_hint(self) -> None:
+        if self.dialogue or self.decision_prompt or self.chat_window or self.player_dead:
+            self.interaction_hint = None
+            return
+        hint_text = None
+        anchor = pygame.Vector2(self.player.rect.midtop)
+        accent = (120, 180, 255)
+        if self.food_prompt_active:
+            hint_text = "E: Comer algo rápido"
+        elif self.active_greeting and not self.active_greeting.get("responded"):
+            agent = self.active_greeting.get("agent")
+            if agent:
+                name = getattr(agent, "name", "Compañero")
+                hint_text = f"Saludar a {name} (E)"
+                anchor = pygame.Vector2(agent.rect.midtop)
+                accent = (210, 170, 255)
+        if not hint_text:
+            door = self.map.door_for_rect(self.player.rect.inflate(10, 10))
+            if door:
+                dest = door.get("dest") or "un salón"
+                hint_text = f"Entrar a {dest} (E)"
+        if not hint_text:
+            for npc in self.npcs:
+                if self.player.rect.colliderect(npc.rect.inflate(48, 48)):
+                    hint_text = f"Hablar con {npc.name} (E)"
+                    anchor = pygame.Vector2(npc.rect.midtop)
+                    accent = (180, 210, 255)
+                    break
+        if not hint_text:
+            for item in self.items:
+                if self.player.rect.colliderect(item.rect.inflate(24, 24)):
+                    hint_text = "E: Recoger objeto"
+                    anchor = pygame.Vector2(item.rect.midtop)
+                    accent = (170, 230, 190)
+                    break
+        if not hint_text:
+            near_spec = self._nearest_specialist()
+            if near_spec and self.player.rect.colliderect(near_spec.rect.inflate(80, 80)):
+                hint_text = f"Apoyar a {near_spec.name} (E)"
+                anchor = pygame.Vector2(near_spec.rect.midtop)
+                accent = (220, 200, 140)
+        if not hint_text and self.rush_cooldown <= 0:
+            hint_text = "Q: Lanzar coordinación masiva"
+            accent = (255, 160, 120)
+        if hint_text:
+            self.interaction_hint = {"text": hint_text, "pos": anchor, "accent": accent}
+        else:
+            self.interaction_hint = None
+
+    def _draw_interaction_hint(self, surface: pygame.Surface) -> None:
+        if not self.interaction_hint or not self.interaction_hint.get("text"):
+            return
+        pos = self.interaction_hint.get("pos")
+        if pos is None:
+            return
+        if not isinstance(pos, pygame.Vector2):
+            try:
+                pos = pygame.Vector2(pos)
+            except Exception:
+                pos = pygame.Vector2(self.player.rect.midtop)
+        bubble_rect = pygame.Rect(int(pos.x), int(pos.y), 4, 4)
+        screen_rect = self.camera.apply(bubble_rect)
+        bubble_pos = (screen_rect.centerx, screen_rect.top)
+        accent = self.interaction_hint.get("accent", (120, 180, 255))
+        draw_interaction_bubble(surface, bubble_pos, self.interaction_hint["text"], self.interaction_font, accent=accent)
 
     def _update_fight(self, dt: float) -> None:
         if not self.active_fight:
