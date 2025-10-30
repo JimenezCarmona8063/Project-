@@ -1,6 +1,6 @@
 # game/ui.py — botones, sliders y HUD
 import pygame
-from settings import WHITE
+from settings import WHITE, RED, GREEN
 
 class Button:
     def __init__(self, rect, text, font, on_click, bg=(40,40,40), bg_hover=(60,60,60), fg=(255,255,255), hover_sound=None):
@@ -73,10 +73,53 @@ class Slider:
         knob_x = int(self.rect.x + self.value * self.rect.w)
         pygame.draw.circle(surface, (220,220,220), (knob_x, self.rect.centery), max(6, self.rect.h//3))
 
-def draw_hud(surface, player):
-    # vida/inventario breve; ajusta a tu juego
-    f = pygame.font.SysFont("arial", 18, bold=True)
-    x, y = 10, surface.get_height()-28
-    txt = f"HP: {getattr(player, 'hp', 100)}   INV: {len(getattr(player, 'inventory', []))}"
-    s = f.render(txt, True, WHITE)
-    surface.blit(s, (x, y))
+def draw_hud(surface, player, planner_status=None):
+    font = pygame.font.SysFont("arial", 18, bold=True)
+    small = pygame.font.SysFont("arial", 16)
+
+    bar_rect = pygame.Rect(12, 12, 220, 20)
+    pygame.draw.rect(surface, (25, 25, 25), bar_rect, border_radius=8)
+    inner = bar_rect.inflate(-4, -4)
+    ratio = 1.0
+    if getattr(player, "max_hp", 0):
+        ratio = max(0.0, min(1.0, float(getattr(player, "hp", 0)) / float(player.max_hp)))
+    pygame.draw.rect(surface, RED, inner, border_radius=6)
+    fill = inner.copy()
+    fill.width = int(inner.width * ratio)
+    pygame.draw.rect(surface, GREEN, fill, border_radius=6)
+    label = font.render(f"HP {int(getattr(player, 'hp', 0))}/{int(getattr(player, 'max_hp', 0))}", True, WHITE)
+    surface.blit(label, (bar_rect.x, bar_rect.y - 24))
+
+    info_lines = []
+    room = getattr(player, "current_room", None)
+    if room:
+        info_lines.append(f"Salón: {room}")
+    info_lines.append(f"Inventario: {len(getattr(player, 'inventory', []))}")
+
+    y = bar_rect.bottom + 6
+    for line in info_lines:
+        s = small.render(line, True, WHITE)
+        surface.blit(s, (bar_rect.x, y))
+        y += s.get_height() + 2
+
+    if planner_status:
+        active_total = planner_status.get("active_total", 0)
+        max_parallel = planner_status.get("max_parallel", active_total)
+        queue = planner_status.get("queue", 0)
+        buffer_size = planner_status.get("buffer", 0)
+        resources = planner_status.get("resources", {})
+        res_text = " ".join(
+            f"{key[:1].upper()}{int(value)}" for key, value in resources.items()
+        )
+        planner_lines = [
+            f"Acciones: {active_total}/{max_parallel}",
+            f"Heap: {queue}  Buffer: {buffer_size}",
+            f"Recursos: {res_text}",
+        ]
+        last_event = planner_status.get("last_event")
+        if last_event:
+            planner_lines.append(last_event)
+        for line in planner_lines:
+            s = small.render(line, True, WHITE)
+            surface.blit(s, (bar_rect.x, y))
+            y += s.get_height() + 2

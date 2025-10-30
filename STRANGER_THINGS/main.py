@@ -13,9 +13,19 @@ from settings import (
 from core.engine import Camera2D, Scene, draw_text
 from game.ui import draw_hud, Button, Slider
 
-from game.entities import Player, NPC, Enemy, Item
+from game.entities import (
+    Player,
+    NPC,
+    Enemy,
+    Item,
+    Collector,
+    Hunter,
+    Builder,
+    Guardian,
+)
 from game.dialogue import DialogueBox
 from core.tilemap_tmx import TmxMap
+from game.actions import ActionPlanner
 
 # ---------- helpers ----------
 def load_ui_font(size=32):
@@ -68,6 +78,27 @@ class PlayScene(Scene):
         ]
         self.enemies = [Enemy(20*TILE, 4*TILE), Enemy(34*TILE, 14*TILE)]
         self.items = [Item(25*TILE, 8*TILE, "Tarjeta de Acceso")]
+        self.specialists = []
+
+        visible_specs = [
+            (Collector, "Sofía", (spawn_x + TILE * 2, spawn_y), True),
+            (Hunter, "Diego", (spawn_x + TILE * 4, spawn_y), True),
+            (Builder, "María", (spawn_x + TILE * 2, spawn_y + TILE * 2), True),
+            (Guardian, "Valentín", (spawn_x + TILE * 4, spawn_y + TILE * 2), True),
+            (Collector, "Elena", (spawn_x - TILE * 2, spawn_y + TILE * 2), True),
+            (Builder, "Rafael", (spawn_x - TILE * 2, spawn_y), True),
+            (Hunter, "Camila", (spawn_x + TILE * 6, spawn_y), True),
+            (Guardian, "Lucía", (spawn_x + TILE * 6, spawn_y + TILE * 2), True),
+        ]
+        for cls, name, pos, visible in visible_specs:
+            self.specialists.append(cls(pos[0], pos[1], name, visible=visible))
+
+        extra_classes = [Collector, Hunter, Builder, Guardian]
+        while len(self.specialists) < 60:
+            idx = len(self.specialists)
+            cls = extra_classes[idx % len(extra_classes)]
+            name = f"{cls.__name__} Aux {idx+1}"
+            self.specialists.append(cls(spawn_x, spawn_y, name, visible=False))
         # diálogos
         if not os.path.isfile(DIALOGUES_JSON):
             os.makedirs(os.path.dirname(DIALOGUES_JSON), exist_ok=True)
@@ -88,6 +119,17 @@ class PlayScene(Scene):
             self.scripts = json.load(f)
         self.dialogue = None
         self.interact_hold = False
+        self.message_text = ""
+        self.message_timer = 0.0
+
+        self.planner = ActionPlanner(self.specialists, self.map, player=self.player, max_parallel=64)
+        self.decision_status = None
+        self.font_overlay = load_ui_font(18)
+        self.font_overlay_small = load_ui_font(16)
+        if self.font_overlay is None:
+            self.font_overlay = pygame.font.SysFont("arial", 18, bold=True)
+        if self.font_overlay_small is None:
+            self.font_overlay_small = pygame.font.SysFont("arial", 16)
 
     def handle_event(self, event):
         if self.dialogue:
@@ -96,40 +138,167 @@ class PlayScene(Scene):
                 self.dialogue = None
 
     def update(self, dt):
+        keys = keydict()
         if not self.dialogue:
-            self.player.handle_input(keydict())
+            self.player.handle_input(keys)
         self.player.update(dt, self.map)
-        for n in self.npcs: n.update(dt, self.map)
-        for e in self.enemies: e.update(dt, self.map, self.player)
+        player_room = self.map.room_for_rect(self.player.rect)
+        self.player.current_room = player_room.get("name") if player_room else None
+
+        for n in self.npcs:
+            n.update(dt, self.map)
+        for e in self.enemies:
+            e.update(dt, self.map, self.player)
         for it in self.items:
             if not it.dead and self.player.rect.colliderect(it.rect):
                 it.picked(self.player)
         self.items = [i for i in self.items if not i.dead]
 
-        kd = keydict()
-        if kd["interact"] and not self.interact_hold and not self.dialogue:
+        self.planner.set_player_room(self.player.current_room)
+        self.planner.update(dt, self.map)
+        for agent in self.specialists:
+            if agent.current_action is None:
+                agent.idle_step(dt, self.map)
+
+        self.decision_status = self.planner.get_status_snapshot()
+
+        if self.message_timer > 0:
+            self.message_timer -= dt
+            if self.message_timer <= 0:
+                self.message_text = ""
+
+        if keys["interact"] and not self.interact_hold and not self.dialogue:
             self.interact_hold = True
-            for n in self.npcs:
-                if self.player.rect.colliderect(n.rect.inflate(30,30)):
-                    lines = self.scripts.get(n.script_id, ["..."])
-                    if n.script_id == "npc_guard" and "Tarjeta de Acceso" in self.player.inventory:
-                        lines = self.scripts.get("npc_congrats", ["Bien."])
-                    self.dialogue = DialogueBox(lines, n.name)
-                    break
-        if not kd["interact"]:
+            if self._try_enter_room():
+                self.player.interact_cooldown = 0.6
+            elif self._try_support_specialist():
+                self.player.interact_cooldown = 0.6
+            else:
+                for n in self.npcs:
+                    if self.player.rect.colliderect(n.rect.inflate(30,30)):
+                        lines = self.scripts.get(n.script_id, ["..."])
+                        if n.script_id == "npc_guard" and "Tarjeta de Acceso" in self.player.inventory:
+                            lines = self.scripts.get("npc_congrats", ["Bien."])
+                        self.dialogue = DialogueBox(lines, n.name)
+                        break
+        if not keys["interact"]:
             self.interact_hold = False
 
         self.camera.center_on(self.player.rect)
+
+        if not self.message_text:
+            near = self._nearest_specialist()
+            if near:
+                self._set_message(f"{near.name}: {near.status_text()}", 0.5)
 
     def draw(self, surface):
         surface.fill((15,15,20))
         self.map.draw(surface, self.camera)
         for it in self.items: it.draw(surface, self.camera)
         for n in self.npcs: n.draw(surface, self.camera)
+        for agent in self.specialists: agent.draw(surface, self.camera)
         for e in self.enemies: e.draw(surface, self.camera)
         self.player.draw(surface, self.camera)
-        draw_hud(surface, self.player)
+        draw_hud(surface, self.player, self.decision_status)
+        self._draw_action_overlay(surface)
+        if self.message_text:
+            self._draw_message(surface)
         if self.dialogue: self.dialogue.draw(surface)
+
+    def _nearest_specialist(self):
+        best = None
+        best_dist = None
+        player_center = pygame.Vector2(self.player.rect.center)
+        for agent in self.specialists:
+            if not getattr(agent, "visible", False):
+                continue
+            dist = player_center.distance_to(pygame.Vector2(agent.rect.center))
+            if dist < 120:
+                if best is None or dist < best_dist:
+                    best = agent
+                    best_dist = dist
+        return best
+
+    def _set_message(self, text, duration=2.0):
+        if not text:
+            return
+        self.message_text = text
+        self.message_timer = max(duration, 0.1)
+
+    def _try_support_specialist(self):
+        for agent in self.specialists:
+            if not getattr(agent, "visible", False):
+                continue
+            if agent.rect.colliderect(self.player.rect.inflate(50, 50)):
+                msg = self.planner.boost_character(agent, helper=self.player)
+                if msg:
+                    self._set_message(msg)
+                else:
+                    self._set_message(f"{agent.name}: {agent.status_text()}")
+                return True
+        return False
+
+    def _try_enter_room(self):
+        door = self.map.door_for_rect(self.player.rect)
+        if door:
+            dest_name = door.get("dest")
+            target_room = self.map.get_room(dest_name) or self.map.closest_room_to_rect(door.get("rect"))
+            rect = target_room.get("rect") if target_room else None
+            if rect and isinstance(rect, pygame.Rect):
+                self.player.rect.center = rect.center
+                self.player.current_room = target_room.get("name")
+                self.planner.report_player_entered_room(self.player.current_room)
+                self._set_message(f"Entraste a {self.player.current_room}")
+                return True
+        room = self.map.room_for_rect(self.player.rect)
+        if room:
+            self.player.current_room = room.get("name")
+            self.planner.report_player_entered_room(self.player.current_room)
+            self._set_message(f"Estás en {self.player.current_room}")
+            return True
+        return False
+
+    def _draw_message(self, surface):
+        msg_surf = self.font_overlay_small.render(self.message_text, True, (255, 255, 255))
+        padding = 12
+        bg = pygame.Surface((msg_surf.get_width() + padding * 2, msg_surf.get_height() + padding), pygame.SRCALPHA)
+        bg.fill((10, 12, 20, 200))
+        y = surface.get_height() - bg.get_height() - 20
+        surface.blit(bg, (20, y))
+        surface.blit(msg_surf, (20 + padding, y + (padding // 2)))
+
+    def _draw_action_overlay(self, surface):
+        if not self.decision_status:
+            return
+        panel_w, panel_h = 320, 220
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((15, 20, 32, 220))
+        y = 12
+        title = self.font_overlay.render("Planificador", True, (255, 255, 255))
+        panel.blit(title, (12, y))
+        y += title.get_height() + 6
+        for entry in self.decision_status.get("active", [])[:6]:
+            name, category, progress, from_event = entry
+            pct = int(progress * 100)
+            text = f"{name}: {category} {pct}%"
+            if from_event:
+                text += " (!)"
+            line = self.font_overlay_small.render(text, True, (220, 230, 240))
+            panel.blit(line, (12, y))
+            y += line.get_height() + 2
+        history = self.decision_status.get("history", [])
+        if history:
+            y += 4
+            hist_title = self.font_overlay_small.render("Historial", True, (190, 200, 220))
+            panel.blit(hist_title, (12, y))
+            y += hist_title.get_height() + 2
+            for entry in history:
+                line = self.font_overlay_small.render(entry, True, (170, 180, 200))
+                panel.blit(line, (16, y))
+                y += line.get_height() + 1
+                if y > panel_h - 18:
+                    break
+        surface.blit(panel, (surface.get_width() - panel_w - 18, 16))
 
 class MenuScene(Scene):
     def __init__(self, game):
