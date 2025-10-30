@@ -198,6 +198,64 @@ class ActionPlanner:
         self.enqueue_action(action)
         return action
 
+    def start_visual_preview(
+        self,
+        category: Optional[str],
+        focus_room: Optional[str] = None,
+        performer: Optional["Character"] = None,
+        target_hint: Optional[Tuple[float, float]] = None,
+        duration: float = 4.0,
+    ) -> Optional[ActiveAction]:
+        """Dispara una acción corta para que un personaje visible la represente."""
+        if not category:
+            return None
+        if len(self.active) >= self.max_parallel:
+            return None
+        chosen: Optional["Character"] = None
+        if performer and performer in self.characters:
+            if performer.current_action is None and performer.availability >= 0.99 and not getattr(performer, "dead", False):
+                chosen = performer
+        if chosen is None:
+            candidates = [
+                char
+                for char in self.characters
+                if char.current_action is None
+                and char.availability >= 0.99
+                and not getattr(char, "dead", False)
+                and getattr(char, "visible", True)
+            ]
+            if not candidates:
+                return None
+            candidates.sort(key=lambda c: (c.importance, random.random()))
+            chosen = candidates[0]
+        if chosen is None or chosen.current_action is not None:
+            return None
+        action = self._make_preview_action(category, focus_room, chosen)
+        action.duration = max(2.8, min(8.0, float(duration)))
+        action.priority = min(action.priority, 1.0)
+        action.generated_by_event = False
+        if focus_room:
+            action.target_room = focus_room
+        target: Optional[Tuple[float, float]] = None
+        if target_hint is not None:
+            if isinstance(target_hint, pygame.Vector2):
+                target = (float(target_hint.x), float(target_hint.y))
+            elif isinstance(target_hint, (tuple, list)) and len(target_hint) >= 2:
+                target = (float(target_hint[0]), float(target_hint[1]))
+        if target is None:
+            target = self._target_for_action(action, chosen)
+        chosen.assign_action(action, target=target)
+        preview = ActiveAction(
+            character=chosen,
+            action=action,
+            remaining=action.duration,
+            total=action.duration,
+            target=target,
+        )
+        self.active.append(preview)
+        self.history.prepend(f"{chosen.name} demuestra {action.name}")
+        return preview
+
     def _style_action_for_role(
         self,
         action: Action,
@@ -417,6 +475,36 @@ class ActionPlanner:
             target_room=room,
             generated_by_event=True,
         )
+
+    def _make_preview_action(
+        self,
+        category: str,
+        focus_room: Optional[str],
+        character: "Character",
+    ) -> Action:
+        room_list = []
+        if focus_room:
+            room_list = [focus_room]
+        elif self.rooms_by_name:
+            room_list = list(self.rooms_by_name.keys())
+        else:
+            room_list = ["Patio"]
+        lowered = category.lower()
+        if any(token in lowered for token in ("seguridad", "bienestar", "resguardo")):
+            room_name = focus_room or random.choice(room_list)
+            action = self._make_seguridad_action(room_name)
+            action.generated_by_event = False
+        elif any(token in lowered for token in ("taller", "logística", "logistica", "club", "evento")):
+            action = self._make_taller_action(room_list)
+        else:
+            variant = "tutoria_intensiva" if any(token in lowered for token in ("tutor", "intens", "asesor")) else "apoyo_rapido"
+            action = self._make_apoyo_action(room_list, variant=variant)
+        action = self._style_action_for_role(action, category, focus_room)
+        if focus_room:
+            action.target_room = focus_room
+        if not action.compatibility:
+            action.compatibility = set(getattr(character, "compatibility", []))
+        return action
 
     def _make_followup_action(self, character: Optional["Character"] = None) -> Action:
         rooms = list(self.rooms_by_name.keys()) or ["Patio"]

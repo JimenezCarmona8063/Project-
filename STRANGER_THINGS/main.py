@@ -246,7 +246,7 @@ class PlayScene(Scene):
         total_h = self.game.screen.get_height()
         map_w = max(320, total_w - self.panel_width)
         map_h = max(240, total_h - self.bottom_feed_height)
-        self.map_zoom = 1.36
+        self.map_zoom = 1.62
         cam_w = max(160, int(map_w / self.map_zoom))
         cam_h = max(160, int(map_h / self.map_zoom))
         self.camera = Camera2D(*self.map.world_size(), cam_w, cam_h)
@@ -457,7 +457,7 @@ class PlayScene(Scene):
         else:
             self.controls_hint = "Controles: WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes | H ayuda"
         self.default_controls_hint = self.controls_hint
-        self.minimap_scale = 0.12
+        self.minimap_scale = 0.10
         self.minimap_base = self._build_minimap_surface()
         self.minimap_rect = self.minimap_base.get_rect() if self.minimap_base else pygame.Rect(0, 0, 0, 0)
         self.map_backdrop: Optional[pygame.Surface] = None
@@ -725,6 +725,7 @@ class PlayScene(Scene):
     ) -> str:
         response = self._accept_auto_task(key)
         if response:
+            task_info = self._find_task_by_key(key)
             arrival = None
             guide_label = "En ruta a la actividad"
             if location:
@@ -737,6 +738,17 @@ class PlayScene(Scene):
                 label=guide_label,
                 arrival_text=arrival,
             )
+            if task_info:
+                focus_room = task_info.get("room") or room
+                category = task_info.get("planner_category") or task_info.get("name")
+                performer = follow if hasattr(follow, "current_action") else None
+                self.planner.start_visual_preview(
+                    category,
+                    focus_room=focus_room,
+                    performer=performer,
+                    target_hint=target,
+                    duration=5.0,
+                )
         return response
 
     def _accept_auto_task(self, key: Optional[str]) -> str:
@@ -754,6 +766,14 @@ class PlayScene(Scene):
                 self.player.adjust_relationship("Equipo", 2)
                 return f"Aceptaste {task['name']}"
         return ""
+
+    def _find_task_by_key(self, key: Optional[str]) -> Optional[dict[str, object]]:
+        if not key:
+            return None
+        for task in self.player_tasks:
+            if task.get("auto_key") == key or task.get("name") == key:
+                return task
+        return None
 
     def _reject_auto_task(self, key: Optional[str]) -> str:
         if not key:
@@ -1536,6 +1556,16 @@ class PlayScene(Scene):
                 follow=follow_target,
             )
             entry["prompt_id"] = prompt_id
+        preview_category = entry.get("planner_category")
+        if preview_category:
+            performer = guide_entity if hasattr(guide_entity, "current_action") else None
+            self.planner.start_visual_preview(
+                preview_category,
+                focus_room=focus_room,
+                performer=performer,
+                target_hint=target_point,
+                duration=4.2,
+            )
         return entry
 
     def _check_proximity_task_spawn(self) -> bool:

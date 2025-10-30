@@ -138,6 +138,47 @@ class Slider:
         knob_x = int(self.rect.x + self.value * self.rect.w)
         pygame.draw.circle(surface, (220,220,220), (knob_x, self.rect.centery), max(6, self.rect.h//3))
 
+
+def _wrap_text_segments(text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+    words = str(text).split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        test = f"{current} {word}"
+        if font.size(test)[0] <= max_width:
+            current = test
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _blit_wrapped(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    text: str,
+    color,
+    x: int,
+    y: int,
+    max_width: int,
+    line_gap: int = 2,
+) -> int:
+    segments = _wrap_text_segments(text, font, max_width)
+    if not segments:
+        return y
+    offset = y
+    for idx, segment in enumerate(segments):
+        surf = font.render(segment, True, color)
+        surface.blit(surf, (x, offset))
+        offset += surf.get_height()
+        if idx < len(segments) - 1:
+            offset += line_gap
+    return offset
+
+
 def _draw_bar(panel, label_font, value_font, y, label, value, max_value, bar_color):
     label_surf = label_font.render(label, True, WHITE)
     panel.blit(label_surf, (18, y))
@@ -187,17 +228,13 @@ def draw_hud(surface, player, planner_status=None, task_log=None, scroll_offset=
         info_lines.append(f"Salón actual: {room}")
     info_lines.append(f"Inventario: {len(getattr(player, 'inventory', []))}")
     for line in info_lines:
-        text = small.render(line, True, WHITE)
-        content.blit(text, (18, y))
-        y += text.get_height() + 4
+        y = _blit_wrapped(content, small, line, WHITE, 18, y, panel_w - 36) + 4
 
     alerts = list(getattr(player, "alerts", []))
     if alerts:
         y += 6
         for alert in alerts[:3]:
-            alert_text = tiny.render(f"⚠ {alert}", True, RED)
-            content.blit(alert_text, (18, y))
-            y += alert_text.get_height() + 2
+            y = _blit_wrapped(content, tiny, f"⚠ {alert}", RED, 18, y, panel_w - 36) + 2
 
     relationships_fn = getattr(player, "top_relationships", None)
     rels = relationships_fn() if callable(relationships_fn) else []
@@ -207,9 +244,7 @@ def draw_hud(surface, player, planner_status=None, task_log=None, scroll_offset=
         content.blit(rel_title, (18, y))
         y += rel_title.get_height() + 2
         for name, value in rels:
-            rel_text = tiny.render(f"{name}: {int(value)}", True, WHITE)
-            content.blit(rel_text, (28, y))
-            y += rel_text.get_height() + 2
+            y = _blit_wrapped(content, tiny, f"{name}: {int(value)}", WHITE, 28, y, panel_w - 46) + 2
 
     log = list(getattr(player, "interaction_log", []))
     if log:
@@ -218,9 +253,7 @@ def draw_hud(surface, player, planner_status=None, task_log=None, scroll_offset=
         content.blit(log_title, (18, y))
         y += log_title.get_height() + 2
         for entry in log[-12:]:
-            entry_surf = tiny.render(entry, True, WHITE)
-            content.blit(entry_surf, (28, y))
-            y += entry_surf.get_height() + 2
+            y = _blit_wrapped(content, tiny, entry, WHITE, 28, y, panel_w - 46) + 2
 
     feed = list(getattr(player, "social_feed", []))
     if feed:
@@ -229,9 +262,7 @@ def draw_hud(surface, player, planner_status=None, task_log=None, scroll_offset=
         content.blit(feed_title, (18, y))
         y += feed_title.get_height() + 2
         for entry in feed[:6]:
-            entry_surf = tiny.render(entry, True, WHITE)
-            content.blit(entry_surf, (24, y))
-            y += entry_surf.get_height() + 2
+            y = _blit_wrapped(content, tiny, entry, WHITE, 24, y, panel_w - 44) + 2
 
     tasks = task_log or []
     if tasks:
@@ -244,12 +275,12 @@ def draw_hud(surface, player, planner_status=None, task_log=None, scroll_offset=
             room_label = task.get("room")
             if room_label:
                 label = f"{label} @ {room_label}"
-            desc = tiny.render(label, True, WHITE)
-            content.blit(desc, (24, y))
-            y += desc.get_height() + 1
-            status = tiny.render(task.get("status", ""), True, WHITE)
-            content.blit(status, (30, y))
-            y += status.get_height() + 4
+            y = _blit_wrapped(content, tiny, label, WHITE, 24, y, panel_w - 44) + 1
+            status_text = str(task.get("status", ""))
+            if status_text:
+                y = _blit_wrapped(content, tiny, status_text, WHITE, 30, y, panel_w - 48) + 4
+            else:
+                y += 4
 
     content_h = max(y + 24, panel_h)
     if content.get_height() < content_h:
@@ -295,19 +326,22 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
     if active_prompts:
         for prompt in active_prompts[:3]:
             text = prompt.get("text") or "Acción disponible"
-            prompt_label = small.render(text, True, WHITE)
-            feed_surface.blit(prompt_label, (16, y))
+            label_top = y
+            for line in _wrap_text_segments(text, small, rect.width - 32):
+                prompt_label = small.render(line, True, WHITE)
+                feed_surface.blit(prompt_label, (16, y))
+                y += prompt_label.get_height() + 2
             timer = prompt.get("timer")
             duration = prompt.get("duration")
             if timer is not None:
                 timer_text = tiny.render(f"{max(0, int(timer + 0.9))}s", True, (170, 190, 220))
-                feed_surface.blit(timer_text, (rect.width - timer_text.get_width() - 16, y))
-            y += prompt_label.get_height() + 2
+                feed_surface.blit(timer_text, (rect.width - timer_text.get_width() - 16, label_top))
             detail = prompt.get("detail")
             if detail:
-                detail_surf = tiny.render(str(detail), True, (190, 210, 235))
-                feed_surface.blit(detail_surf, (28, y))
-                y += detail_surf.get_height() + 2
+                for line in _wrap_text_segments(detail, tiny, rect.width - 48):
+                    detail_surf = tiny.render(line, True, (190, 210, 235))
+                    feed_surface.blit(detail_surf, (28, y))
+                    y += detail_surf.get_height() + 2
             if timer is not None and duration:
                 progress = 0.0 if duration <= 0 else max(0.0, min(1.0, float(duration - timer) / float(duration)))
                 bar_rect = pygame.Rect(28, y, rect.width - 56, 6)
@@ -321,14 +355,19 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
                 if isinstance(key_display, int):
                     key_display = pygame.key.name(key_display).upper()
                 label = option.get("label", "Selecciona")
-                option_text = tiny.render(f"[{key_display}] {label}", True, (200, 220, 255))
-                feed_surface.blit(option_text, (28, y))
-                y += option_text.get_height() + 1
+                option_label = f"[{key_display}] {label}"
+                for line in _wrap_text_segments(option_label, tiny, rect.width - 56):
+                    option_text = tiny.render(line, True, (200, 220, 255))
+                    feed_surface.blit(option_text, (28, y))
+                    y += option_text.get_height() + 1
             y += 6
     else:
-        empty = small.render("No hay acciones pendientes. Busca compañeros para interactuar.", True, (190, 200, 210))
-        feed_surface.blit(empty, (16, y))
-        y += empty.get_height() + 8
+        empty_text = "No hay acciones pendientes. Busca compañeros para interactuar."
+        for line in _wrap_text_segments(empty_text, small, rect.width - 32):
+            empty = small.render(line, True, (190, 200, 210))
+            feed_surface.blit(empty, (16, y))
+            y += empty.get_height() + 4
+        y += 4
 
     y = max(y + 4, rect.height // 2 - 10)
     history_title = small.render("Historial reciente", True, WHITE)
@@ -337,35 +376,27 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
     for entry in (history or [])[:6]:
         text = entry.get("text", "")
         color = entry.get("color") or (220, 220, 230)
-        entry_surf = tiny.render(text, True, color)
-        feed_surface.blit(entry_surf, (24, y))
-        y += entry_surf.get_height() + 2
+        for line in _wrap_text_segments(text, tiny, rect.width - 48):
+            entry_surf = tiny.render(line, True, color)
+            feed_surface.blit(entry_surf, (24, y))
+            y += entry_surf.get_height() + 2
         if y > rect.height - 36:
             break
 
     if controls_hint:
-        hint = tiny.render(controls_hint, True, (170, 180, 200))
-        feed_surface.blit(hint, (16, rect.height - hint.get_height() - 10))
+        hint_lines = _wrap_text_segments(controls_hint, tiny, rect.width - 32)
+        offset_y = rect.height - 10
+        for line in reversed(hint_lines):
+            hint = tiny.render(line, True, (170, 180, 200))
+            offset_y -= hint.get_height()
+            feed_surface.blit(hint, (16, offset_y))
 
     pygame.draw.rect(feed_surface, (10, 12, 18), feed_surface.get_rect(), width=2, border_radius=12)
     surface.blit(feed_surface, rect.topleft)
 
 
 def _wrap_lines(text, font, max_width):
-    words = str(text).split()
-    lines = []
-    current = ""
-    for word in words:
-        test = (current + " " + word).strip()
-        if font.size(test)[0] <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
+    return _wrap_text_segments(text, font, max_width)
 
 
 def draw_action_popup(surface, prompts, anchor_rect=None):
