@@ -298,10 +298,24 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
             prompt_label = small.render(text, True, WHITE)
             feed_surface.blit(prompt_label, (16, y))
             timer = prompt.get("timer")
+            duration = prompt.get("duration")
             if timer is not None:
                 timer_text = tiny.render(f"{max(0, int(timer + 0.9))}s", True, (170, 190, 220))
                 feed_surface.blit(timer_text, (rect.width - timer_text.get_width() - 16, y))
             y += prompt_label.get_height() + 2
+            detail = prompt.get("detail")
+            if detail:
+                detail_surf = tiny.render(str(detail), True, (190, 210, 235))
+                feed_surface.blit(detail_surf, (28, y))
+                y += detail_surf.get_height() + 2
+            if timer is not None and duration:
+                progress = 0.0 if duration <= 0 else max(0.0, min(1.0, float(duration - timer) / float(duration)))
+                bar_rect = pygame.Rect(28, y, rect.width - 56, 6)
+                pygame.draw.rect(feed_surface, (28, 32, 44), bar_rect, border_radius=3)
+                fill = bar_rect.inflate(-2, -2)
+                fill.width = int(fill.width * progress)
+                pygame.draw.rect(feed_surface, (110, 170, 255), fill, border_radius=3)
+                y += bar_rect.height + 4
             for option in prompt.get("options", []):
                 key_display = option.get("display") or option.get("key")
                 if isinstance(key_display, int):
@@ -310,7 +324,7 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
                 option_text = tiny.render(f"[{key_display}] {label}", True, (200, 220, 255))
                 feed_surface.blit(option_text, (28, y))
                 y += option_text.get_height() + 1
-            y += 4
+            y += 6
     else:
         empty = small.render("No hay acciones pendientes. Busca compañeros para interactuar.", True, (190, 200, 210))
         feed_surface.blit(empty, (16, y))
@@ -335,6 +349,102 @@ def draw_action_feed(surface, rect, prompts, history, controls_hint=None):
 
     pygame.draw.rect(feed_surface, (10, 12, 18), feed_surface.get_rect(), width=2, border_radius=12)
     surface.blit(feed_surface, rect.topleft)
+
+
+def _wrap_lines(text, font, max_width):
+    words = str(text).split()
+    lines = []
+    current = ""
+    for word in words:
+        test = (current + " " + word).strip()
+        if font.size(test)[0] <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def draw_action_popup(surface, prompts, anchor_rect=None):
+    if not prompts:
+        return
+    prompt = prompts[0]
+    width = min(520, surface.get_width() - 80)
+    height = 168
+    popup = pygame.Surface((width, height), pygame.SRCALPHA)
+
+    bg_rect = popup.get_rect()
+    shadow = pygame.Surface((width + 12, height + 12), pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, 140), shadow.get_rect(), border_radius=28)
+    pygame.draw.rect(popup, (26, 34, 52, 235), bg_rect, border_radius=24)
+    pygame.draw.rect(popup, (90, 160, 255, 255), bg_rect, width=2, border_radius=24)
+
+    title_font = pygame.font.SysFont("arial", 20, bold=True)
+    body_font = pygame.font.SysFont("arial", 18)
+    small_font = pygame.font.SysFont("arial", 16)
+
+    title = prompt.get("text") or "Nueva acción"
+    lines = _wrap_lines(title, title_font, width - 48)
+    y = 18
+    for line in lines:
+        surf = title_font.render(line, True, WHITE)
+        popup.blit(surf, (24, y))
+        y += surf.get_height() + 2
+
+    detail = prompt.get("detail")
+    if detail:
+        for line in _wrap_lines(detail, body_font, width - 48):
+            surf = body_font.render(line, True, (210, 220, 240))
+            popup.blit(surf, (24, y))
+            y += surf.get_height() + 2
+        y += 2
+
+    timer = prompt.get("timer")
+    duration = prompt.get("duration")
+    if timer is not None and duration:
+        remaining = max(0.0, float(timer))
+        progress = max(0.0, min(1.0, (duration - remaining) / max(0.1, duration)))
+        track = pygame.Rect(24, y + 6, width - 48, 10)
+        pygame.draw.rect(popup, (34, 42, 60), track, border_radius=6)
+        fill = track.inflate(-2, -2)
+        fill.width = int(fill.width * progress)
+        pygame.draw.rect(popup, (110, 180, 255), fill, border_radius=6)
+        timer_text = small_font.render(f"{int(remaining + 0.9)} s restantes", True, (200, 220, 255))
+        popup.blit(timer_text, (24, track.bottom + 6))
+        y = track.bottom + 10 + timer_text.get_height()
+    else:
+        y += 4
+
+    option_y = max(y, height - 70)
+    for option in prompt.get("options", []):
+        key_display = option.get("display") or option.get("key")
+        if isinstance(key_display, int):
+            key_display = pygame.key.name(key_display).upper()
+        label = option.get("label", "Selecciona")
+        key_surf = small_font.render(str(key_display), True, WHITE)
+        label_surf = small_font.render(label, True, (210, 220, 240))
+        badge_width = max(140, key_surf.get_width() + label_surf.get_width() + 36)
+        badge = pygame.Surface((badge_width, 32), pygame.SRCALPHA)
+        pygame.draw.rect(badge, (42, 60, 96, 220), badge.get_rect(), border_radius=16)
+        pygame.draw.rect(badge, (120, 180, 255, 255), badge.get_rect(), width=2, border_radius=16)
+        badge.blit(key_surf, (12, (badge.get_height() - key_surf.get_height()) // 2))
+        badge.blit(label_surf, (badge.get_width() - label_surf.get_width() - 14, (badge.get_height() - label_surf.get_height()) // 2))
+        popup.blit(badge, (24, option_y))
+        option_y += badge.get_height() + 8
+
+    if anchor_rect:
+        pos_x = anchor_rect.centerx - popup.get_width() // 2
+        pos_y = anchor_rect.top - popup.get_height() - 18
+    else:
+        pos_x = (surface.get_width() - popup.get_width()) // 2
+        pos_y = surface.get_height() - popup.get_height() - 28
+    pos_y = max(20, pos_y)
+
+    surface.blit(shadow, (pos_x - 6, pos_y + 6))
+    surface.blit(popup, (pos_x, pos_y))
 
 
 class DecisionPrompt:

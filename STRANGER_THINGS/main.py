@@ -19,6 +19,7 @@ from core.engine import Camera2D, Scene, draw_text
 from game.ui import (
     draw_hud,
     draw_action_feed,
+    draw_action_popup,
     Button,
     Slider,
     DecisionPrompt,
@@ -245,7 +246,7 @@ class PlayScene(Scene):
         total_h = self.game.screen.get_height()
         map_w = max(320, total_w - self.panel_width)
         map_h = max(240, total_h - self.bottom_feed_height)
-        self.map_zoom = 1.18
+        self.map_zoom = 1.36
         cam_w = max(160, int(map_w / self.map_zoom))
         cam_h = max(160, int(map_h / self.map_zoom))
         self.camera = Camera2D(*self.map.world_size(), cam_w, cam_h)
@@ -455,6 +456,7 @@ class PlayScene(Scene):
             self.controls_hint = profile_hint
         else:
             self.controls_hint = "Controles: WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes | H ayuda"
+        self.default_controls_hint = self.controls_hint
         self.minimap_scale = 0.12
         self.minimap_base = self._build_minimap_surface()
         self.minimap_rect = self.minimap_base.get_rect() if self.minimap_base else pygame.Rect(0, 0, 0, 0)
@@ -479,6 +481,9 @@ class PlayScene(Scene):
         self.help_hold = False
         self.help_overlay_auto = False
         self.help_auto_timer = 0.0
+        self.autopilot: Optional[dict[str, object]] = None
+        self.guidance_arrow_phase = 0.0
+        self.guidance_hint_timer = 0.0
         self._show_role_intro()
 
     def _build_minimap_surface(self) -> pygame.Surface:
@@ -579,6 +584,9 @@ class PlayScene(Scene):
         duration: Optional[float] = 6.0,
         tag: Optional[str] = None,
         on_timeout: Optional[Callable[[], object]] = None,
+        detail: Optional[str] = None,
+        target: Optional[object] = None,
+        follow: Optional[object] = None,
     ) -> str:
         self.prompt_counter += 1
         prompt_id = f"P{self.prompt_counter}"
@@ -586,9 +594,13 @@ class PlayScene(Scene):
             "id": prompt_id,
             "text": text,
             "options": [],
-            "timer": duration,
+            "timer": float(duration) if duration is not None else None,
+            "duration": float(duration) if duration is not None else None,
             "tag": tag,
             "on_timeout": on_timeout,
+            "detail": detail,
+            "target": target,
+            "follow": follow,
         }
         if options:
             for opt in options:
@@ -608,6 +620,45 @@ class PlayScene(Scene):
             if prompt.get("id") == prompt_id:
                 self.action_prompts.remove(prompt)
                 break
+
+    def _activate_guidance(
+        self,
+        target: Optional[object] = None,
+        follow: Optional[object] = None,
+        room: Optional[str] = None,
+        label: Optional[str] = None,
+        arrival_text: Optional[str] = None,
+    ) -> None:
+        guide_target: Optional[pygame.Vector2] = None
+        if follow is not None and hasattr(follow, "rect"):
+            guide_target = pygame.Vector2(getattr(follow, "rect").center)
+        elif target is not None:
+            if isinstance(target, pygame.Vector2):
+                guide_target = target.copy()
+            elif isinstance(target, (tuple, list)) and len(target) >= 2:
+                guide_target = pygame.Vector2(float(target[0]), float(target[1]))
+        elif room:
+            room_def = self.map.get_room(room)
+            if room_def:
+                rect = room_def.get("rect")
+                if isinstance(rect, pygame.Rect):
+                    guide_target = pygame.Vector2(rect.center)
+        if guide_target is None:
+            return
+        self.autopilot = {
+            "follow": follow,
+            "target": guide_target,
+            "room": room,
+            "label": label or "En camino",
+            "arrival_text": arrival_text,
+            "radius": 42 if follow else 36,
+        }
+        self.guidance_arrow_phase = 0.0
+        self.autopilot["indicator"] = guide_target
+        self.player.push_alert("Sigue las flechas para llegar a tu actividad")
+        self.controls_hint = "Flechas activas: deja que te guíen o usa WASD para cancelar"
+        self.guidance_hint_timer = 6.0
+        self._set_message(self.autopilot.get("label"), 2.0)
 
     def _log_action(self, message, color: Optional[tuple[int, int, int]] = None) -> None:
         if not message:
@@ -664,6 +715,30 @@ class PlayScene(Scene):
             return True
         return False
 
+    def _accept_auto_task_guided(
+        self,
+        key: Optional[str],
+        target: Optional[object] = None,
+        follow: Optional[object] = None,
+        room: Optional[str] = None,
+        location: Optional[str] = None,
+    ) -> str:
+        response = self._accept_auto_task(key)
+        if response:
+            arrival = None
+            guide_label = "En ruta a la actividad"
+            if location:
+                arrival = f"Has llegado a {location}. Busca la indicación y presiona E para ayudar."
+                guide_label = f"Camino hacia {location}"
+            self._activate_guidance(
+                target=target,
+                follow=follow,
+                room=room,
+                label=guide_label,
+                arrival_text=arrival,
+            )
+        return response
+
     def _accept_auto_task(self, key: Optional[str]) -> str:
         if not key:
             return ""
@@ -708,6 +783,67 @@ class PlayScene(Scene):
                     return f"Perdiste {name}"
                 return "Perdiste una actividad"
         return ""
+
+    def _update_autopilot(self, dt: float, base_keys: dict[str, bool]) -> Optional[dict[str, bool]]:
+        if not self.autopilot:
+            return None
+        if any(base_keys.get(k, False) for k in ("up", "down", "left", "right")):
+            self.autopilot = None
+            self.controls_hint = self.default_controls_hint
+            self.guidance_hint_timer = 0.0
+            self.player.push_alert("Cancelaste la guía manualmente")
+            return None
+        indicator: Optional[pygame.Vector2] = None
+        follow = self.autopilot.get("follow") if isinstance(self.autopilot, dict) else None
+        if follow is not None and hasattr(follow, "rect"):
+            indicator = pygame.Vector2(getattr(follow, "rect").center)
+        else:
+            raw_target = None
+            if isinstance(self.autopilot, dict):
+                raw_target = self.autopilot.get("target")
+            if isinstance(raw_target, pygame.Vector2):
+                indicator = raw_target.copy()
+            elif isinstance(raw_target, (tuple, list)) and len(raw_target) >= 2:
+                indicator = pygame.Vector2(float(raw_target[0]), float(raw_target[1]))
+            room = None
+            if isinstance(self.autopilot, dict):
+                room = self.autopilot.get("room")
+            if room:
+                room_def = self.map.get_room(room)
+                if room_def:
+                    rect = room_def.get("rect")
+                    if isinstance(rect, pygame.Rect):
+                        indicator = pygame.Vector2(rect.center)
+        if indicator is None:
+            self.autopilot = None
+            self.controls_hint = self.default_controls_hint
+            self.guidance_hint_timer = 0.0
+            return None
+        self.autopilot["indicator"] = indicator
+        player_pos = pygame.Vector2(self.player.rect.center)
+        distance = player_pos.distance_to(indicator)
+        if distance <= self.autopilot.get("radius", 36):
+            arrival = self.autopilot.get("arrival_text")
+            if arrival:
+                self._set_message(arrival, 2.4)
+            self.autopilot = None
+            self.controls_hint = self.default_controls_hint
+            self.guidance_hint_timer = 0.0
+            return None
+        direction = indicator - player_pos
+        if direction.length_squared() <= 1.0:
+            return None
+        direction = direction.normalize()
+        autop_keys = dict(base_keys)
+        autop_keys.update({"up": False, "down": False, "left": False, "right": False})
+        autop_keys["up"] = direction.y < -0.28
+        autop_keys["down"] = direction.y > 0.28
+        autop_keys["left"] = direction.x < -0.28
+        autop_keys["right"] = direction.x > 0.28
+        self.autopilot["vector"] = direction
+        self.autopilot["distance"] = distance
+        self.guidance_arrow_phase = (self.guidance_arrow_phase + dt * 3.2) % (math.tau)
+        return autop_keys
 
     def _resolve_greeting_choice(self, accept: bool, manual: bool = True) -> str:
         if not self.active_greeting:
@@ -901,6 +1037,13 @@ class PlayScene(Scene):
             if self.help_auto_timer <= 0:
                 self.help_overlay_auto = False
                 self.show_controls_overlay = False
+        if self.guidance_hint_timer > 0:
+            self.guidance_hint_timer = max(0.0, self.guidance_hint_timer - dt)
+            if self.guidance_hint_timer <= 0:
+                self.controls_hint = self.default_controls_hint
+        autop_keys = self._update_autopilot(dt, keys)
+        if autop_keys:
+            keys = autop_keys
         if not self.dialogue and not self.decision_prompt and not self.chat_window and not self.show_controls_overlay:
             self.player.handle_input(keys)
         else:
@@ -1048,6 +1191,7 @@ class PlayScene(Scene):
             e.draw(map_buffer, self.camera)
         self.player.draw(map_buffer, self.camera)
         self._draw_interaction_hint(map_buffer)
+        self._draw_guidance_indicator(map_buffer)
         self._draw_activity_markers(map_buffer)
         scaled_map = pygame.transform.smoothscale(map_buffer, self.map_view.size)
         surface.blit(scaled_map, self.map_view.topleft)
@@ -1059,6 +1203,7 @@ class PlayScene(Scene):
             self.hud_scroll = self.hud_scroll_max
         draw_action_feed(surface, self.action_feed_rect, self.action_prompts, list(self.action_history), controls_hint=self.controls_hint)
         pygame.draw.rect(surface, (18, 22, 34), self.action_feed_rect, width=2, border_radius=16)
+        draw_action_popup(surface, self.action_prompts, self.action_feed_rect)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
         if self.chat_window:
@@ -1280,7 +1425,12 @@ class PlayScene(Scene):
             key = task.get("auto_key") or task.get("name")
             self._complete_auto_task(key, False)
 
-    def _spawn_random_task(self, source_name: Optional[str] = None, focus_room: Optional[str] = None):
+    def _spawn_random_task(
+        self,
+        source_name: Optional[str] = None,
+        focus_room: Optional[str] = None,
+        guide_entity: Optional[object] = None,
+    ):
         templates = self._templates_for_room(focus_room)
         if not templates:
             templates = self._templates_for_room(None)
@@ -1297,6 +1447,24 @@ class PlayScene(Scene):
             "auto_key": template.get("name"),
             "room": focus_room,
         }
+        location_label: Optional[str] = None
+        target_point: Optional[tuple[float, float]] = None
+        follow_target: Optional[object] = None
+        if guide_entity is not None and hasattr(guide_entity, "rect"):
+            follow_target = guide_entity
+            rect = getattr(guide_entity, "rect")
+            target_point = (float(rect.centerx), float(rect.centery))
+            location_label = getattr(guide_entity, "name", source_name)
+        if location_label is None and focus_room:
+            location_label = focus_room
+        if target_point is None and focus_room:
+            room_def = self.map.get_room(focus_room)
+            if room_def:
+                room_rect = room_def.get("rect")
+                if isinstance(room_rect, pygame.Rect):
+                    target_point = (float(room_rect.centerx), float(room_rect.centery))
+        if location_label is None and source_name:
+            location_label = source_name
         if template.get("planner_category"):
             action = self.planner.plan_player_choice(
                 template["planner_category"],
@@ -1329,6 +1497,10 @@ class PlayScene(Scene):
             self.player.push_alert(f"Nueva tarea: {entry['name']}")
             self.player.note_interaction(f"Nueva tarea: {entry['name']}")
             self._set_message(f"¡Nueva misión!: {entry['name']}", 2.6)
+        if target_point:
+            entry["target_pos"] = target_point
+        if location_label:
+            entry["location"] = location_label
         if template.get("type") == "food":
             self.pending_food_task_key = entry["auto_key"]
             self._activate_food_prompt(force=True)
@@ -1342,15 +1514,26 @@ class PlayScene(Scene):
         self._add_activity_marker(entry["name"], pos=pygame.Vector2(self.player.rect.center), color=marker_color)
         if entry.get("auto"):
             auto_key = entry.get("auto_key")
+            detail_text = None
+            if location_label:
+                detail_text = f"Pulsa Y para aceptar y sigue las flechas hacia {location_label}."
             prompt_id = self._push_action_prompt(
                 text=f"¿Ayudar con {entry['name']}?",
                 options=[
-                    {"key": pygame.K_y, "display": "Y", "label": "Aceptar", "callback": lambda key=auto_key: self._accept_auto_task(key)},
+                    {
+                        "key": pygame.K_y,
+                        "display": "Y",
+                        "label": "Aceptar",
+                        "callback": lambda key=auto_key, pos=target_point, follow=follow_target, room=focus_room, loc=location_label: self._accept_auto_task_guided(key, pos, follow, room, loc),
+                    },
                     {"key": pygame.K_n, "display": "N", "label": "Rechazar", "callback": lambda key=auto_key: self._reject_auto_task(key)},
                 ],
                 duration=8.0,
                 tag="task",
                 on_timeout=lambda key=auto_key: self._auto_task_timeout(key),
+                detail=detail_text,
+                target=target_point,
+                follow=follow_target,
             )
             entry["prompt_id"] = prompt_id
         return entry
@@ -1386,7 +1569,7 @@ class PlayScene(Scene):
             return False
         room = self.map.room_for_rect(entity.rect)
         room_name = room.get("name") if room else None
-        self._spawn_random_task(source_name=name, focus_room=room_name)
+        self._spawn_random_task(source_name=name, focus_room=room_name, guide_entity=entity)
         self.recent_task_sources[name] = random.uniform(18.0, 28.0)
         if room_name:
             self.room_task_cooldowns[room_name] = random.uniform(16.0, 24.0)
@@ -1507,6 +1690,7 @@ class PlayScene(Scene):
             duration=6.0,
             tag="greeting",
             on_timeout=self._resolve_greeting_timeout,
+            detail=f"Pulsa Y para devolver el saludo o N para ignorar a {greeter.name}",
         )
         self.active_greeting = {
             "agent": greeter,
@@ -1620,6 +1804,34 @@ class PlayScene(Scene):
         self.activity_markers.append(marker)
         if len(self.activity_markers) > 24:
             self.activity_markers = self.activity_markers[-24:]
+
+    def _draw_guidance_indicator(self, surface: pygame.Surface) -> None:
+        if not self.autopilot:
+            return
+        indicator = None
+        if isinstance(self.autopilot, dict):
+            indicator = self.autopilot.get("indicator")
+        if indicator is None:
+            return
+        player_pos = pygame.Vector2(self.player.rect.center)
+        target_vec = pygame.Vector2(indicator)
+        direction = target_vec - player_pos
+        if direction.length_squared() <= 4.0:
+            return
+        direction = direction.normalize()
+        start = pygame.Vector2(player_pos.x - self.camera.x, player_pos.y - self.camera.y)
+        arrow_color = (120, 190, 255)
+        base = start + direction * 28
+        dynamic_length = 42 + 8 * math.sin(self.guidance_arrow_phase)
+        tip = start + direction * dynamic_length
+        pygame.draw.line(surface, arrow_color, base, tip, 4)
+        perp = pygame.Vector2(-direction.y, direction.x)
+        wing1 = tip - direction * 14 + perp * 8
+        wing2 = tip - direction * 14 - perp * 8
+        pygame.draw.polygon(surface, arrow_color, [tip, wing1, wing2])
+        target_screen = pygame.Vector2(target_vec.x - self.camera.x, target_vec.y - self.camera.y)
+        pulse = 18 + int(4 * math.sin(self.guidance_arrow_phase * 1.6))
+        pygame.draw.circle(surface, (70, 130, 220, 120), (int(target_screen.x), int(target_screen.y)), max(14, pulse), width=3)
 
     def _draw_activity_markers(self, surface: pygame.Surface) -> None:
         if not self.activity_markers or self.activity_font is None:
