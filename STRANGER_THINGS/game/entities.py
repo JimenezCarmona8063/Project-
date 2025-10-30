@@ -267,8 +267,8 @@ class Player(Character):
             importance=6,
             speed=PLAYER_SPEED,
             max_hp=120,
-            compatibility=["lider"],
-            aptitudes=["Recolectar", "Construir", "Defender/Resguardarse"],
+            compatibility=["lider", "academia", "colaboracion"],
+            aptitudes=["Apoyo académico", "Tutoría intensiva", "Logística escolar", "Plan de seguridad"],
         )
         self.inventory = []
         self.interact_cooldown = 0.0
@@ -440,8 +440,8 @@ class Enemy(Character):
             importance=4,
             speed=ENEMY_SPEED,
             max_hp=80,
-            compatibility=["seguridad"],
-            aptitudes=["Defender/Resguardarse"],
+            compatibility=["bienestar"],
+            aptitudes=["Plan de seguridad"],
         )
 
     def update(self, dt, tilemap, player=None):
@@ -530,8 +530,8 @@ class Collector(AICharacter):
             importance=2,
             speed=120.0,
             max_hp=95,
-            compatibility=["naturaleza", "equipo"],
-            aptitudes=["Recolectar", "Recolectar - Cosecha"],
+            compatibility=["academia", "colaboracion"],
+            aptitudes=["Apoyo académico", "Tutoría intensiva"],
             visible=visible,
         )
 
@@ -546,8 +546,8 @@ class Hunter(AICharacter):
             importance=3,
             speed=125.0,
             max_hp=105,
-            compatibility=["naturaleza", "seguridad"],
-            aptitudes=["Recolectar - Caza", "Defender/Resguardarse"],
+            compatibility=["academia", "emergencia"],
+            aptitudes=["Tutoría intensiva", "Plan de seguridad"],
             visible=visible,
         )
 
@@ -562,8 +562,8 @@ class Builder(AICharacter):
             importance=4,
             speed=110.0,
             max_hp=110,
-            compatibility=["infraestructura"],
-            aptitudes=["Construir"],
+            compatibility=["logistica"],
+            aptitudes=["Logística escolar"],
             visible=visible,
         )
 
@@ -578,7 +578,7 @@ class Guardian(AICharacter):
             importance=5,
             speed=115.0,
             max_hp=120,
-            compatibility=["seguridad", "resguardo"],
-            aptitudes=["Defender/Resguardarse"],
+            compatibility=["bienestar", "resguardo"],
+            aptitudes=["Plan de seguridad"],
             visible=visible,
         )

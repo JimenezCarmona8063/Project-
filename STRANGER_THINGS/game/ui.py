@@ -14,6 +14,7 @@ from settings import (
     KEY_RIGHT,
     KEY_INTERACT,
     KEY_INVENTORY,
+    KEY_ACTION_RUSH,
 )
 
 class Button:
@@ -189,6 +190,7 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
         f"Movimiento: {KEY_UP.upper()} {KEY_LEFT.upper()} {KEY_DOWN.upper()} {KEY_RIGHT.upper()}",
         f"Interactuar: {KEY_INTERACT.upper()} / ENTER",
         f"Inventario: {KEY_INVENTORY.upper()}",
+        f"Ráfaga de acciones: {KEY_ACTION_RUSH.upper()}",
         "ESC: Menú / salir",
     ]
     for text in controls_lines:

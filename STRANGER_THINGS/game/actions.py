@@ -147,6 +147,16 @@ class ActionPlanner:
     def enqueue_action(self, action: Action) -> None:
         self.instruction_buffer.put(action)
 
+    def trigger_mass_actions(self, target_parallel: int = 100) -> str:
+        """Eleva el cupo y rellena acciones para alcanzar la ráfaga solicitada."""
+        self.max_parallel = max(self.max_parallel, target_parallel)
+        pending_total = len(self.active) + len(self.action_heap) + self.instruction_buffer.qsize()
+        needed = max(0, target_parallel - pending_total)
+        for _ in range(needed):
+            self.enqueue_action(self._make_followup_action())
+        self.history.prepend(f"Ráfaga programada: {target_parallel} acciones")
+        return f"Ráfaga de {target_parallel} acciones activada"
+
     def plan_player_choice(
         self,
         category: str,
@@ -155,14 +165,15 @@ class ActionPlanner:
     ) -> Optional[Action]:
         rooms = [room.get("name") for room in self.rooms if room.get("name")]
         action: Optional[Action] = None
-        if category.lower().startswith("recolect"):
-            variant = random.choice(["cosecha", "caza"])
-            action = self._make_recolectar_action(rooms, variant=variant)
-        elif category.lower().startswith("constru"):
-            action = self._make_construir_action(rooms)
-        elif category.lower().startswith("defend"):
+        lowered = category.lower()
+        if lowered.startswith("apoyo") or lowered.startswith("tutori"):
+            variant = random.choice(["apoyo_rapido", "tutoria_intensiva"])
+            action = self._make_apoyo_action(rooms, variant=variant)
+        elif lowered.startswith("montar") or lowered.startswith("taller"):
+            action = self._make_taller_action(rooms)
+        elif lowered.startswith("plan") or lowered.startswith("seguridad"):
             focus = focus_room or (rooms[0] if rooms else None)
-            action = self._make_defensa_action(focus)
+            action = self._make_seguridad_action(focus)
             action.generated_by_event = False
         if not action:
             return None
@@ -216,12 +227,12 @@ class ActionPlanner:
         if not room_choices:
             room_choices = ["Patio", "Laboratorio", "Biblioteca"]
 
-        for _ in range(32):
-            self.enqueue_action(self._make_recolectar_action(room_choices, variant="cosecha"))
-        for _ in range(22):
-            self.enqueue_action(self._make_recolectar_action(room_choices, variant="caza"))
-        for _ in range(16):
-            self.enqueue_action(self._make_construir_action(room_choices))
+        for _ in range(36):
+            self.enqueue_action(self._make_apoyo_action(room_choices, variant="apoyo_rapido"))
+        for _ in range(24):
+            self.enqueue_action(self._make_apoyo_action(room_choices, variant="tutoria_intensiva"))
+        for _ in range(18):
+            self.enqueue_action(self._make_taller_action(room_choices))
 
     def _ingest_buffer(self) -> None:
         while not self.instruction_buffer.empty():
@@ -270,7 +281,7 @@ class ActionPlanner:
             char = active.character
             char.update_action(dt, tilemap)
             speed = 1.0 + char.importance * 0.05
-            if active.action.variant == "caza":
+            if active.action.variant == "tutoria_intensiva":
                 speed += 0.15
             if active.action.generated_by_event:
                 speed += 0.25
@@ -319,25 +330,25 @@ class ActionPlanner:
     # ------------------------------------------------------------------
     # Action factories
     # ------------------------------------------------------------------
-    def _make_recolectar_action(self, rooms: List[str], variant: str = "cosecha") -> Action:
+    def _make_apoyo_action(self, rooms: List[str], variant: str = "apoyo_rapido") -> Action:
         room = random.choice(rooms) if rooms else None
-        if variant == "caza":
-            name = f"Caza coordinada en {room or 'exterior'}"
-            required = {"Recolectar - Caza"}
-            compat = {"naturaleza", "seguridad"}
-            cost = {"energia": 8.0, "comida": 6.0}
-            duration = random.uniform(10.0, 16.0)
-            priority = random.uniform(1.2, 3.2)
+        if variant == "tutoria_intensiva":
+            name = f"Tutoría intensiva en {room or 'sala de estudio'}"
+            required = {"Tutoría intensiva"}
+            compat = {"academia", "emergencia"}
+            cost = {"energia": 7.5, "comida": 5.0}
+            duration = random.uniform(4.5, 6.2)
+            priority = random.uniform(1.2, 2.6)
         else:
-            name = f"Recolectar recursos en {room or 'campus'}"
-            required = {"Recolectar"}
-            compat = {"naturaleza", "equipo"}
-            cost = {"energia": 6.0, "comida": 4.0}
-            duration = random.uniform(8.0, 14.0)
-            priority = random.uniform(1.6, 3.8)
+            name = f"Apoyo exprés en {room or 'el campus'}"
+            required = {"Apoyo académico"}
+            compat = {"academia", "colaboracion"}
+            cost = {"energia": 5.0, "comida": 3.5}
+            duration = random.uniform(3.6, 5.2)
+            priority = random.uniform(1.6, 3.2)
         return Action(
             name=name,
-            category="Recolectar",
+            category="Apoyo académico",
             duration=duration,
             priority=priority,
             compatibility=compat,
@@ -347,42 +358,46 @@ class ActionPlanner:
             variant=variant,
         )
 
-    def _make_construir_action(self, rooms: List[str]) -> Action:
+    def _make_taller_action(self, rooms: List[str]) -> Action:
         room = random.choice(rooms) if rooms else None
-        name = f"Construir defensas en {room or 'patio central'}"
+        name = f"Montar taller en {room or 'patio central'}"
         return Action(
             name=name,
-            category="Construir",
-            duration=random.uniform(12.0, 20.0),
-            priority=random.uniform(1.0, 2.4),
-            compatibility={"infraestructura"},
-            required_aptitudes={"Construir"},
-            resource_cost={"energia": 10.0, "materiales": 12.0},
+            category="Montar taller",
+            duration=random.uniform(6.0, 9.0),
+            priority=random.uniform(0.9, 2.0),
+            compatibility={"logistica"},
+            required_aptitudes={"Logística escolar"},
+            resource_cost={"energia": 8.0, "materiales": 10.0},
             target_room=room,
         )
 
-    def _make_defensa_action(self, room: Optional[str]) -> Action:
-        name = f"Resguardarse en {room or 'zona segura'}"
+    def _make_seguridad_action(self, room: Optional[str]) -> Action:
+        name = f"Plan de seguridad en {room or 'zona segura'}"
         return Action(
             name=name,
-            category="Defender/Resguardarse",
-            duration=random.uniform(6.0, 10.0),
-            priority=0.6,
-            compatibility={"seguridad", "resguardo"},
-            required_aptitudes={"Defender/Resguardarse"},
-            resource_cost={"energia": 9.0, "materiales": 6.0},
+            category="Plan de seguridad",
+            duration=random.uniform(5.0, 7.5),
+            priority=0.7,
+            compatibility={"bienestar", "resguardo"},
+            required_aptitudes={"Plan de seguridad"},
+            resource_cost={"energia": 7.0, "materiales": 5.0},
             target_room=room,
             generated_by_event=True,
         )
 
     def _make_followup_action(self, character: Optional["Character"] = None) -> Action:
         rooms = list(self.rooms_by_name.keys()) or ["Patio"]
-        if character and character.aptitudes & {"Construir"}:
-            return self._make_construir_action(rooms)
-        if character and character.aptitudes & {"Defender/Resguardarse"}:
-            return self._make_defensa_action(random.choice(rooms))
-        variant = "caza" if character and "Recolectar - Caza" in character.aptitudes else "cosecha"
-        return self._make_recolectar_action(rooms, variant=variant)
+        if character and character.aptitudes & {"Logística escolar"}:
+            return self._make_taller_action(rooms)
+        if character and character.aptitudes & {"Plan de seguridad"}:
+            return self._make_seguridad_action(random.choice(rooms))
+        variant = (
+            "tutoria_intensiva"
+            if character and "Tutoría intensiva" in character.aptitudes
+            else "apoyo_rapido"
+        )
+        return self._make_apoyo_action(rooms, variant=variant)
 
     # ------------------------------------------------------------------
     # Selection helpers
@@ -448,7 +463,7 @@ class ActionPlanner:
             room_name = room.get("name")
         else:
             room_name = "Patio central"
-        self.last_event = f"Alerta en {room_name}"
+        self.last_event = f"Recordatorio de seguridad en {room_name}"
         count = random.randint(4, 7)
         for _ in range(count):
-            self.enqueue_action(self._make_defensa_action(room_name))
+            self.enqueue_action(self._make_seguridad_action(room_name))

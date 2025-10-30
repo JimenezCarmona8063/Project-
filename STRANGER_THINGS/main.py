@@ -8,6 +8,7 @@ from settings import (
     WIDTH, HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, FULLSCREEN,
     FPS, TILE, TITLE,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
+    KEY_ACTION_RUSH,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
     WINE, WINE_HOV, RED, HUD_PANEL_WIDTH
@@ -46,6 +47,7 @@ def keydict():
         "right": keys[getattr(pygame, "K_"+KEY_RIGHT)],
         "interact": keys[getattr(pygame, "K_"+KEY_INTERACT)],
         "inventory": keys[getattr(pygame, "K_"+KEY_INVENTORY)],
+        "rush": keys[getattr(pygame, "K_"+KEY_ACTION_RUSH)],
     }
     return kd
 
@@ -157,7 +159,7 @@ class PlayScene(Scene):
             self.specialists.append(cls(x, y, name, visible=True))
 
         extra_classes = [Collector, Hunter, Builder, Guardian]
-        while len(self.specialists) < 60:
+        while len(self.specialists) < 120:
             idx = len(self.specialists)
             cls = extra_classes[idx % len(extra_classes)]
             name = f"{cls.__name__} Aux {idx+1}"
@@ -209,7 +211,7 @@ class PlayScene(Scene):
         self.message_text = ""
         self.message_timer = 0.0
 
-        self.planner = ActionPlanner(self.specialists, self.map, player=self.player, max_parallel=64)
+        self.planner = ActionPlanner(self.specialists, self.map, player=self.player, max_parallel=80)
         self.decision_status = None
         self.font_overlay = load_ui_font(18)
         self.font_overlay_small = load_ui_font(16)
@@ -229,6 +231,9 @@ class PlayScene(Scene):
         self.pending_food_task_key: Optional[str] = None
         self.pending_social_task_key: Optional[str] = None
         self.player_dead = False
+        self.rush_cooldown = 0.0
+        self.rush_hold = False
+        self.recent_task_sources: dict[str, float] = {}
 
     def handle_event(self, event):
         if self.player_dead:
@@ -257,6 +262,14 @@ class PlayScene(Scene):
                     self.message_text = ""
             return
 
+        if self.rush_cooldown > 0:
+            self.rush_cooldown = max(0.0, self.rush_cooldown - dt)
+        for name in list(self.recent_task_sources.keys()):
+            self.recent_task_sources[name] = max(0.0, self.recent_task_sources[name] - dt)
+            if self.recent_task_sources[name] <= 0:
+                # deja listo para una nueva misión al acercarse de nuevo
+                self.recent_task_sources[name] = 0.0
+
         if self.food_prompt_cooldown > 0:
             self.food_prompt_cooldown = max(0.0, self.food_prompt_cooldown - dt)
         if not self.dialogue and not self.decision_prompt:
@@ -268,6 +281,18 @@ class PlayScene(Scene):
         player_room = self.map.room_for_rect(self.player.rect)
         self.player.current_room = player_room.get("name") if player_room else None
         self._maybe_activate_food_prompt(dt)
+
+        if keys.get("rush"):
+            if not self.rush_hold and self.rush_cooldown <= 0:
+                summary = self.planner.trigger_mass_actions(100)
+                if summary:
+                    self._set_message(summary, 2.6)
+                self.player.note_interaction("Activaste una ráfaga de coordinación")
+                self.player.adjust_relationship("Equipo", 6)
+                self.rush_cooldown = 9.0
+            self.rush_hold = True
+        else:
+            self.rush_hold = False
 
         for n in self.npcs:
             n.update(dt, self.map)
@@ -430,14 +455,14 @@ class PlayScene(Scene):
         current_room = self.player.current_room or "el campus"
         question = f"¿Qué quieres coordinar cerca de {current_room}?"
         options = [
-            "Coordinar recolección",
-            "Impulsar construcción",
-            "Organizar defensa",
+            "Planear apoyo académico",
+            "Montar un taller",
+            "Armar plan de seguridad",
         ]
         self.decision_option_map = {
-            "Coordinar recolección": "Recolectar",
-            "Impulsar construcción": "Construir",
-            "Organizar defensa": "Defender/Resguardarse",
+            "Planear apoyo académico": "Apoyo académico",
+            "Montar un taller": "Montar taller",
+            "Armar plan de seguridad": "Plan de seguridad",
         }
         self.decision_prompt = DecisionPrompt("Plan inmediato", question, options, self.font_overlay, self.font_overlay_small)
 
@@ -511,10 +536,14 @@ class PlayScene(Scene):
         if self.decision_status:
             for _, action_name, _, _, _ in self.decision_status.get("active", []):
                 active_names.add(action_name)
-        self.random_task_timer -= dt
-        if self.random_task_timer <= 0:
-            self._spawn_random_task()
-            self.random_task_timer = random.uniform(14.0, 24.0)
+        proximity_triggered = self._check_proximity_task_spawn()
+        if proximity_triggered:
+            self.random_task_timer = random.uniform(16.0, 24.0)
+        else:
+            self.random_task_timer -= dt
+            if self.random_task_timer <= 0:
+                self._spawn_random_task()
+                self.random_task_timer = random.uniform(18.0, 30.0)
 
         if self.greeting_timer > 0:
             self.greeting_timer -= dt
@@ -560,25 +589,25 @@ class PlayScene(Scene):
             key = task.get("auto_key") or task.get("name")
             self._complete_auto_task(key, False)
 
-    def _spawn_random_task(self):
+    def _spawn_random_task(self, source_name: Optional[str] = None, focus_room: Optional[str] = None):
         templates = [
             {
-                "name": "Recolecta urgente",
-                "planner_category": "Coordinar recolección",
+                "name": "Apoyo académico urgente",
+                "planner_category": "Apoyo académico",
                 "penalty": 12,
-                "reward": {"grades": 4},
-            },
-            {
-                "name": "Fortificar salones",
-                "planner_category": "Impulsar construcción",
-                "penalty": 10,
                 "reward": {"grades": 5},
             },
             {
-                "name": "Simulacro de refugio",
-                "planner_category": "Organizar defensa",
+                "name": "Montar taller relámpago",
+                "planner_category": "Montar taller",
+                "penalty": 10,
+                "reward": {"grades": 4, "social": 3},
+            },
+            {
+                "name": "Plan rápido de seguridad",
+                "planner_category": "Plan de seguridad",
                 "penalty": 9,
-                "reward": {"social": 4},
+                "reward": {"social": 5},
             },
             {
                 "name": "Comer algo rápido",
@@ -606,7 +635,11 @@ class PlayScene(Scene):
             "auto_key": template.get("name"),
         }
         if template.get("planner_category"):
-            action = self.planner.plan_player_choice(template["planner_category"], focus_room=self.player.current_room, helper=self.player)
+            action = self.planner.plan_player_choice(
+                template["planner_category"],
+                focus_room=focus_room or self.player.current_room,
+                helper=self.player,
+            )
             if action:
                 entry["name"] = action.name
                 entry["auto_key"] = action.name
@@ -615,16 +648,54 @@ class PlayScene(Scene):
             else:
                 entry["status"] = "Esperando recursos"
                 entry["timer"] = random.uniform(20.0, 35.0)
+        if source_name:
+            entry["origin"] = source_name
+            if entry.get("status") == "Planificada":
+                entry["status"] = f"{source_name} coordina"
         self.player_tasks.append(entry)
-        self.player.push_alert(f"Nueva tarea: {entry['name']}")
-        self.player.note_interaction(f"Nueva tarea: {entry['name']}")
-        self._set_message(f"¡Nueva misión!: {entry['name']}", 2.6)
+        if source_name:
+            self.player.push_alert(f"{source_name} propone: {entry['name']}")
+            self.player.note_interaction(f"{source_name} pidió ayuda")
+            self._set_message(f"{source_name} lanzó {entry['name']}", 2.8)
+        else:
+            self.player.push_alert(f"Nueva tarea: {entry['name']}")
+            self.player.note_interaction(f"Nueva tarea: {entry['name']}")
+            self._set_message(f"¡Nueva misión!: {entry['name']}", 2.6)
         if template.get("type") == "food":
             self.pending_food_task_key = entry["auto_key"]
             self._activate_food_prompt(force=True)
         elif template.get("type") == "social":
             self.pending_social_task_key = entry["auto_key"]
             self._trigger_random_greeting(force=True, task_key=entry["auto_key"])
+        return entry
+
+    def _check_proximity_task_spawn(self) -> bool:
+        player_center = pygame.Vector2(self.player.rect.center)
+        closest: Optional[tuple[object, float]] = None
+        for npc in self.npcs:
+            dist = player_center.distance_to(pygame.Vector2(npc.rect.center))
+            if dist <= 150:
+                if closest is None or dist < closest[1]:
+                    closest = (npc, dist)
+        for agent in self.specialists:
+            if not getattr(agent, "visible", True):
+                continue
+            dist = player_center.distance_to(pygame.Vector2(agent.rect.center))
+            if dist <= 160:
+                if closest is None or dist < closest[1]:
+                    closest = (agent, dist)
+        if not closest:
+            return False
+        entity, _ = closest
+        name = getattr(entity, "name", "Alumno")
+        cooldown = self.recent_task_sources.get(name, 0.0)
+        if cooldown > 0.0:
+            return False
+        room = self.map.room_for_rect(entity.rect)
+        room_name = room.get("name") if room else None
+        self._spawn_random_task(source_name=name, focus_room=room_name)
+        self.recent_task_sources[name] = random.uniform(18.0, 28.0)
+        return True
 
     def _activate_food_prompt(self, force: bool = False) -> None:
         if self.food_prompt_active:

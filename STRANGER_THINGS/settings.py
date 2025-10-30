@@ -40,6 +40,7 @@ KEY_LEFT = "a"
 KEY_RIGHT = "d"
 KEY_INTERACT = "e"
 KEY_INVENTORY = "i"
+KEY_ACTION_RUSH = "q"
 
 # -----------------------------
 # Gameplay base
