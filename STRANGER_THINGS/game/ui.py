@@ -1,6 +1,20 @@
 # game/ui.py — botones, sliders y HUD
 import pygame
-from settings import WHITE, RED, GREEN, BLUE, ORANGE, PURPLE, HUD_PANEL_WIDTH
+from settings import (
+    WHITE,
+    RED,
+    GREEN,
+    BLUE,
+    ORANGE,
+    PURPLE,
+    HUD_PANEL_WIDTH,
+    KEY_UP,
+    KEY_DOWN,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_INTERACT,
+    KEY_INVENTORY,
+)
 
 class Button:
     def __init__(self, rect, text, font, on_click, bg=(40,40,40), bg_hover=(60,60,60), fg=(255,255,255), hover_sound=None):
@@ -166,6 +180,21 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
             status = tiny.render(task.get("status", ""), True, WHITE)
             panel.blit(status, (30, y))
             y += status.get_height() + 4
+
+    y += 8
+    controls_title = small.render("Controles", True, WHITE)
+    panel.blit(controls_title, (18, y))
+    y += controls_title.get_height() + 2
+    controls_lines = [
+        f"Movimiento: {KEY_UP.upper()} {KEY_LEFT.upper()} {KEY_DOWN.upper()} {KEY_RIGHT.upper()}",
+        f"Interactuar: {KEY_INTERACT.upper()} / ENTER",
+        f"Inventario: {KEY_INVENTORY.upper()}",
+        "ESC: Menú / salir",
+    ]
+    for text in controls_lines:
+        ctrl = tiny.render(text, True, WHITE)
+        panel.blit(ctrl, (24, y))
+        y += ctrl.get_height() + 1
 
     if planner_status:
         y = max(y + 8, surface.get_height() - 190)

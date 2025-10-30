@@ -1,11 +1,12 @@
 # main.py — versión ordenada para evitar "MenuScene undefined"
-import os, sys, json, random
+import os, sys, json, random, math
 from typing import Optional
 
 import pygame
 
 from settings import (
-    WIDTH, HEIGHT, FPS, TILE, TITLE,
+    WIDTH, HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, FULLSCREEN,
+    FPS, TILE, TITLE,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
@@ -77,51 +78,132 @@ class PlayScene(Scene):
         if getattr(self.game, "selected_role", None) in ROLE_COLORS:
             self.player.color = ROLE_COLORS[self.game.selected_role]
 
-        self.npcs = [
-            NPC(8*TILE, 6*TILE, "Profe", "npc_prof"),
-            NPC(30*TILE, 20*TILE, "Guardia", "npc_guard"),
+        world_w, world_h = self.map.world_size()
+        room_spots = []
+        for room in getattr(self.map, "rooms", []):
+            rect = room.get("rect")
+            if isinstance(rect, pygame.Rect):
+                room_spots.append((rect.centerx, rect.centery))
+
+        def clamp_pos(px: float, py: float) -> tuple[int, int]:
+            return (
+                max(TILE, min(world_w - TILE, int(px))),
+                max(TILE, min(world_h - TILE, int(py))),
+            )
+
+        fallback_spots = [
+            (spawn_x + TILE * 8, spawn_y),
+            (spawn_x - TILE * 8, spawn_y + TILE * 3),
+            (spawn_x + TILE * 4, spawn_y - TILE * 6),
+            (spawn_x - TILE * 10, spawn_y - TILE * 2),
+            (spawn_x + TILE * 10, spawn_y + TILE * 5),
+            (spawn_x - TILE * 6, spawn_y + TILE * 6),
+            (spawn_x + TILE * 2, spawn_y + TILE * 9),
+            (spawn_x - TILE * 12, spawn_y + TILE * 2),
         ]
+        available_spots = [clamp_pos(x, y) for (x, y) in (room_spots or fallback_spots)]
+        random.shuffle(available_spots)
+
+        def random_spot() -> tuple[int, int]:
+            angle = random.uniform(0.0, math.tau)
+            radius = random.uniform(4.0, 12.0) * TILE
+            return clamp_pos(spawn_x + math.cos(angle) * radius, spawn_y + math.sin(angle) * radius)
+
+        def ensure_spots(count: int) -> None:
+            while len(available_spots) < count:
+                available_spots.append(random_spot())
+
+        def pull_spot() -> tuple[int, int]:
+            ensure_spots(1)
+            return available_spots.pop()
+
+        self.npcs = [
+            NPC(8 * TILE, 6 * TILE, "Profe", "npc_prof"),
+            NPC(30 * TILE, 20 * TILE, "Guardia", "npc_guard"),
+        ]
+        npc_blueprints = [
+            ("Ana", "npc_student_ana"),
+            ("Jorge", "npc_student_jorge"),
+            ("Coach", "npc_coach"),
+            ("Luz", "npc_artist"),
+            ("Mateo", "npc_scientist"),
+            ("Rita", "npc_librarian"),
+        ]
+        ensure_spots(len(npc_blueprints) + 12)
+        for name, script_id in npc_blueprints:
+            x, y = pull_spot()
+            self.npcs.append(NPC(x, y, name, script_id))
         self.enemies = [Enemy(20*TILE, 4*TILE), Enemy(34*TILE, 14*TILE)]
         self.items = [Item(25*TILE, 8*TILE, "Tarjeta de Acceso")]
         self.specialists = []
 
-        visible_specs = [
-            (Collector, "Sofía", (spawn_x + TILE * 2, spawn_y), True),
-            (Hunter, "Diego", (spawn_x + TILE * 4, spawn_y), True),
-            (Builder, "María", (spawn_x + TILE * 2, spawn_y + TILE * 2), True),
-            (Guardian, "Valentín", (spawn_x + TILE * 4, spawn_y + TILE * 2), True),
-            (Collector, "Elena", (spawn_x - TILE * 2, spawn_y + TILE * 2), True),
-            (Builder, "Rafael", (spawn_x - TILE * 2, spawn_y), True),
-            (Hunter, "Camila", (spawn_x + TILE * 6, spawn_y), True),
-            (Guardian, "Lucía", (spawn_x + TILE * 6, spawn_y + TILE * 2), True),
+        specialist_templates = [
+            (Collector, "Sofía"),
+            (Hunter, "Diego"),
+            (Builder, "María"),
+            (Guardian, "Valentín"),
+            (Collector, "Elena"),
+            (Builder, "Rafael"),
+            (Hunter, "Camila"),
+            (Guardian, "Lucía"),
+            (Collector, "Isabela"),
+            (Hunter, "Andrés"),
+            (Builder, "Iker"),
+            (Guardian, "Claudia"),
         ]
-        for cls, name, pos, visible in visible_specs:
-            self.specialists.append(cls(pos[0], pos[1], name, visible=visible))
+        ensure_spots(len(specialist_templates) + 20)
+        for cls, name in specialist_templates:
+            x, y = pull_spot()
+            self.specialists.append(cls(x, y, name, visible=True))
 
         extra_classes = [Collector, Hunter, Builder, Guardian]
         while len(self.specialists) < 60:
             idx = len(self.specialists)
             cls = extra_classes[idx % len(extra_classes)]
             name = f"{cls.__name__} Aux {idx+1}"
-            self.specialists.append(cls(spawn_x, spawn_y, name, visible=False))
+            visible = idx < 16
+            px, py = (pull_spot() if visible else random_spot())
+            self.specialists.append(cls(px, py, name, visible=visible))
         # diálogos
+        default_scripts = {
+            "npc_prof": [
+                "¡Hey! Bienvenido a UP Adventure.",
+                "Trae de la cafetería una *Tarjeta de Acceso* y vuelve conmigo.",
+                "Con eso podrás entrar al laboratorio."
+            ],
+            "npc_guard": [
+                "No puedes pasar sin Tarjeta de Acceso.",
+                "Regresa cuando la tengas."
+            ],
+            "npc_congrats": ["¡Eso es! Ya puedes entrar al lab. ¡Suerte!"],
+            "npc_student_ana": [
+                "Estoy corriendo entre clases, ¿ya hiciste tu tarea?",
+                "Dicen que si la saltas baja tu promedio rápido..."
+            ],
+            "npc_student_jorge": [
+                "Hey, vamos al laboratorio juntos.",
+                "Si no saludas a la banda luego se enojan."],
+            "npc_coach": [
+                "Entrenar también cuenta como tarea, ¡mueve esas piernas!",
+                "Si te quedas quieto pierdes energía."],
+            "npc_artist": [
+                "¿Viste las exposiciones del salón de arte?",
+                "Siempre hay algo nuevo pasando por aquí."],
+            "npc_scientist": [
+                "Recolecto datos para la próxima feria de ciencias.",
+                "¿Me ayudas a conseguir materiales?"],
+            "npc_librarian": [
+                "Shh... pero acuérdate de entregar tus tareas a tiempo.",
+                "Si no estudias, las calificaciones bajan."],
+        }
         if not os.path.isfile(DIALOGUES_JSON):
             os.makedirs(os.path.dirname(DIALOGUES_JSON), exist_ok=True)
             with open(DIALOGUES_JSON, "w", encoding="utf-8") as f:
-                json.dump({
-                    "npc_prof": [
-                        "¡Hey! Bienvenido a UP Adventure.",
-                        "Trae de la cafetería una *Tarjeta de Acceso* y vuelve conmigo.",
-                        "Con eso podrás entrar al laboratorio."
-                    ],
-                    "npc_guard": [
-                        "No puedes pasar sin Tarjeta de Acceso.",
-                        "Regresa cuando la tengas."
-                    ],
-                    "npc_congrats": ["¡Eso es! Ya puedes entrar al lab. ¡Suerte!"]
-                }, f, ensure_ascii=False, indent=2)
+                json.dump(default_scripts, f, ensure_ascii=False, indent=2)
         with open(DIALOGUES_JSON, "r", encoding="utf-8") as f:
             self.scripts = json.load(f)
+        for key, lines in default_scripts.items():
+            self.scripts.setdefault(key, lines)
         self.dialogue = None
         self.interact_hold = False
         self.message_text = ""
@@ -138,8 +220,8 @@ class PlayScene(Scene):
         self.decision_prompt: Optional[DecisionPrompt] = None
         self.decision_option_map: dict[str, str] = {}
         self.player_tasks: list[dict[str, object]] = []
-        self.random_task_timer = random.uniform(16.0, 28.0)
-        self.greeting_timer = random.uniform(8.0, 16.0)
+        self.random_task_timer = random.uniform(12.0, 22.0)
+        self.greeting_timer = random.uniform(6.0, 12.0)
         self.active_greeting: Optional[dict[str, object]] = None
         self.food_prompt_active = False
         self.food_prompt_timer = 0.0
@@ -432,13 +514,13 @@ class PlayScene(Scene):
         self.random_task_timer -= dt
         if self.random_task_timer <= 0:
             self._spawn_random_task()
-            self.random_task_timer = random.uniform(18.0, 32.0)
+            self.random_task_timer = random.uniform(14.0, 24.0)
 
         if self.greeting_timer > 0:
             self.greeting_timer -= dt
         if self.greeting_timer <= 0:
             self._trigger_random_greeting()
-            self.greeting_timer = random.uniform(14.0, 24.0)
+            self.greeting_timer = random.uniform(8.0, 16.0)
 
         if self.active_greeting:
             self.active_greeting["timer"] -= dt
@@ -518,7 +600,7 @@ class PlayScene(Scene):
             "done": False,
             "started": False,
             "auto": True,
-            "timer": random.uniform(30.0, 50.0),
+            "timer": random.uniform(24.0, 40.0),
             "penalty": template.get("penalty", 8),
             "reward": template.get("reward", {}),
             "auto_key": template.get("name"),
@@ -536,6 +618,7 @@ class PlayScene(Scene):
         self.player_tasks.append(entry)
         self.player.push_alert(f"Nueva tarea: {entry['name']}")
         self.player.note_interaction(f"Nueva tarea: {entry['name']}")
+        self._set_message(f"¡Nueva misión!: {entry['name']}", 2.6)
         if template.get("type") == "food":
             self.pending_food_task_key = entry["auto_key"]
             self._activate_food_prompt(force=True)
@@ -622,7 +705,7 @@ class PlayScene(Scene):
         self.player.begin_greeting(greeter.name)
         self.player.note_interaction(f"{greeter.name} te saludó")
         self._set_message(f"{greeter.name} se acerca a saludarte", 2.5)
-        self.greeting_timer = random.uniform(16.0, 26.0)
+        self.greeting_timer = random.uniform(10.0, 18.0)
 
     def _complete_auto_task(self, key: Optional[str], success: bool) -> None:
         if not key:
@@ -696,9 +779,9 @@ class MenuScene(Scene):
             img = pygame.image.load(TITLE_IMAGE).convert()
             self.bg = img
             iw, ih = img.get_width(), img.get_height()
-            iw = max(iw, WIDTH)
-            ih = max(ih, HEIGHT)
-            if (game.screen.get_width(), game.screen.get_height()) != (iw, ih):
+            iw = max(iw, WINDOW_WIDTH)
+            ih = max(ih, WINDOW_HEIGHT)
+            if not FULLSCREEN and (game.screen.get_width(), game.screen.get_height()) != (iw, ih):
                 game.screen = pygame.display.set_mode((iw, ih))
         except Exception:
             pass
@@ -827,17 +910,20 @@ class Game:
             pass
 
         # tamaño ventana según portada
-        win_size = (WIDTH, HEIGHT)
+        win_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
         try:
             tmp = pygame.image.load(TITLE_IMAGE)
-            win_w = max(tmp.get_width(), WIDTH)
-            win_h = max(tmp.get_height(), HEIGHT)
+            win_w = max(tmp.get_width(), WINDOW_WIDTH)
+            win_h = max(tmp.get_height(), WINDOW_HEIGHT)
             win_size = (win_w, win_h)
         except Exception:
             pass
 
         pygame.display.set_caption(TITLE)
-        self.screen = pygame.display.set_mode(win_size)
+        if FULLSCREEN:
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode(win_size)
         self.clock = pygame.time.Clock()
 
         # audio global (opcional)

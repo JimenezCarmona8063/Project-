@@ -105,7 +105,7 @@ class ActionPlanner:
 
         self.max_parallel = max_parallel
         self.last_event: Optional[str] = None
-        self.event_timer = random.uniform(18.0, 28.0)
+        self.event_timer = random.uniform(14.0, 22.0)
 
         self.populate_initial_actions()
 

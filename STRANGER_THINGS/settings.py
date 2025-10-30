@@ -4,11 +4,14 @@ import os
 # -----------------------------
 # Pantalla / Juego base
 # -----------------------------
-WIDTH, HEIGHT = 1600, 900
+WIDTH, HEIGHT = 1600, 900  # área jugable principal (mapa)
+HUD_PANEL_WIDTH = 360
+WINDOW_WIDTH = WIDTH + HUD_PANEL_WIDTH
+WINDOW_HEIGHT = HEIGHT
+FULLSCREEN = True
 FPS = 60
 TITLE = "UP Adventure — Starter Kit (Top-Down)"
 TILE = 32
-HUD_PANEL_WIDTH = 360
 
 # -----------------------------
 # Colores
