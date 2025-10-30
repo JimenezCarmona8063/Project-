@@ -9,7 +9,7 @@ from settings import (
     WIDTH, HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, FULLSCREEN,
     FPS, TILE, TITLE,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
-    KEY_ACTION_RUSH, KEY_FIGHT, KEY_MESSAGE,
+    KEY_ACTION_RUSH, KEY_FIGHT, KEY_MESSAGE, KEY_HELP,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
     WINE, WINE_HOV, RED, HUD_PANEL_WIDTH
@@ -40,6 +40,172 @@ from game.dialogue import DialogueBox
 from core.tilemap_tmx import TmxMap
 from game.actions import ActionPlanner
 
+# Configuración de roles jugables
+ROLE_PROFILES = {
+    "ALUMNO": {
+        "role_key": "ALUMNO",
+        "color": (235, 200, 40),
+        "compatibility": ["lider", "academia", "colaboracion", "estudiante"],
+        "aptitudes": ["Apoyo académico", "Tutoría intensiva"],
+        "greeting": "¡Bienvenido al campus como alumno!",
+        "intro_lines": [
+            "Acércate a compañeros para recibir tareas aleatorias.",
+            "Responde saludos con Y/N para mantener tu vida social.",
+        ],
+        "instructions": [
+            "WASD: moverte por el campus",
+            "E o ENTER: interactuar, aceptar tareas, comer y descansar",
+            "Q: ráfaga de coordinación (lanza 100 acciones del equipo)",
+            "Si ves un aviso de descanso o comida, pulsa E para recuperarte",
+            "F: iniciar una pelea amistosa de práctica",
+            "M: abrir la red social y mandar mensajes",
+            "I: abrir tu inventario",
+            "ESC: pausar o volver al menú",
+            "H: mostrar/ocultar esta guía",
+        ],
+        "decision_options": [
+            ("Resolver tarea pendiente", "Apoyo académico"),
+            ("Unirte a actividad de club", "Montar taller"),
+            ("Apoyar bienestar estudiantil", "Plan de seguridad"),
+        ],
+        "controls_hint": "WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes | H ayuda",
+        "planner_styles": {
+            "Apoyo académico": {
+                "category": "Estudio guiado",
+                "names": [
+                    "Estudiar en equipo en {room}",
+                    "Resolver tarea pendiente en {room}",
+                    "Preparar examen en {room}",
+                ],
+            },
+            "Montar taller": {
+                "category": "Club estudiantil",
+                "names": [
+                    "Organizar club creativo en {room}",
+                    "Coordinar práctica deportiva en {room}",
+                    "Montar proyecto estudiantil en {room}",
+                ],
+            },
+            "Plan de seguridad": {
+                "category": "Bienestar estudiantil",
+                "names": [
+                    "Supervisar convivencia en {room}",
+                    "Apoyar orientación en {room}",
+                    "Cuidar equipo escolar en {room}",
+                ],
+            },
+        },
+    },
+    "MAESTRO": {
+        "role_key": "MAESTRO",
+        "color": (200, 200, 255),
+        "compatibility": ["lider", "docencia", "academia"],
+        "aptitudes": ["Apoyo académico", "Tutoría intensiva", "Plan de seguridad"],
+        "greeting": "¡Listo para inspirar a tu clase!",
+        "intro_lines": [
+            "Coordina asesorías para subir el rendimiento del grupo.",
+            "Visita laboratorios y aulas para detonar actividades docentes.",
+        ],
+        "instructions": [
+            "WASD: moverte entre salones",
+            "E o ENTER: interactuar, iniciar clases y descansar",
+            "Q: lanzar coordinación docente (100 acciones)",
+            "Aprovecha los avisos para tomar café o descansar con E",
+            "F: iniciar dinámica de disciplina",
+            "M: enviar mensajes al personal o alumnos",
+            "I: consultar materiales",
+            "ESC: pausar o volver al menú",
+            "H: mostrar/ocultar esta guía",
+        ],
+        "decision_options": [
+            ("Preparar clase interactiva", "Apoyo académico"),
+            ("Dirigir taller didáctico", "Montar taller"),
+            ("Supervisar seguridad del campus", "Plan de seguridad"),
+        ],
+        "controls_hint": "WASD moverte | E interactuar | Y/N responder | Q coordinación | F disciplina | M mensajes | H ayuda",
+        "planner_styles": {
+            "Apoyo académico": {
+                "category": "Preparación docente",
+                "names": [
+                    "Planear clase magistral en {room}",
+                    "Revisar exámenes en {room}",
+                    "Guiar asesoría personalizada en {room}",
+                ],
+            },
+            "Montar taller": {
+                "category": "Taller docente",
+                "names": [
+                    "Organizar taller didáctico en {room}",
+                    "Montar laboratorio demostrativo en {room}",
+                    "Coordinar clínica académica en {room}",
+                ],
+            },
+            "Plan de seguridad": {
+                "category": "Supervisión escolar",
+                "names": [
+                    "Revisar protocolos en {room}",
+                    "Coordinar simulacro en {room}",
+                    "Atender incidentes en {room}",
+                ],
+            },
+        },
+    },
+    "COLABORADOR": {
+        "role_key": "COLABORADOR",
+        "color": (255, 170, 110),
+        "compatibility": ["lider", "logistica", "servicio"],
+        "aptitudes": ["Logística escolar", "Plan de seguridad"],
+        "greeting": "¡Gracias por apoyar las operaciones del campus!",
+        "intro_lines": [
+            "Atiende puntos de servicio y mantén los suministros al día.",
+            "Coordina eventos y seguridad cuando los alumnos lo pidan.",
+        ],
+        "instructions": [
+            "WASD: moverte por las áreas de servicio",
+            "E o ENTER: atender solicitudes, comer y descansar",
+            "Q: organizar un impulso logístico (100 acciones)",
+            "Sigue los avisos y pulsa E para recuperar salud o energía",
+            "F: calmar conflictos con presencia",
+            "M: mandar mensajes a equipos de apoyo",
+            "I: revisar inventario",
+            "ESC: pausar o volver al menú",
+            "H: mostrar/ocultar esta guía",
+        ],
+        "decision_options": [
+            ("Atender servicio a estudiantes", "Apoyo académico"),
+            ("Organizar logística del campus", "Montar taller"),
+            ("Revisar protocolos de seguridad", "Plan de seguridad"),
+        ],
+        "controls_hint": "WASD moverte | E interactuar | Y/N responder | Q logística | F intervenir | M mensajes | H ayuda",
+        "planner_styles": {
+            "Apoyo académico": {
+                "category": "Servicio a estudiantes",
+                "names": [
+                    "Atender ventanilla en {room}",
+                    "Resolver trámites en {room}",
+                    "Orientar visitantes en {room}",
+                ],
+            },
+            "Montar taller": {
+                "category": "Logística de eventos",
+                "names": [
+                    "Reabastecer kiosko en {room}",
+                    "Organizar exhibición en {room}",
+                    "Preparar stand de apoyo en {room}",
+                ],
+            },
+            "Plan de seguridad": {
+                "category": "Supervisión operativa",
+                "names": [
+                    "Revisar rutas de evacuación en {room}",
+                    "Coordinar mantenimiento en {room}",
+                    "Asegurar inventario en {room}",
+                ],
+            },
+        },
+    },
+}
+
 # ---------- helpers ----------
 def load_ui_font(size=32):
     try:
@@ -59,6 +225,7 @@ def keydict():
         "rush": keys[getattr(pygame, "K_"+KEY_ACTION_RUSH)],
         "fight": keys[getattr(pygame, "K_"+KEY_FIGHT)],
         "message": keys[getattr(pygame, "K_"+KEY_MESSAGE)],
+        "help": keys[getattr(pygame, "K_"+KEY_HELP)],
     }
     return kd
 
@@ -90,15 +257,18 @@ class PlayScene(Scene):
 
         # 3) Player en el spawn del TMX
         spawn_x, spawn_y = self.map.player_spawn
-        self.player = Player(spawn_x, spawn_y)
-        # aplica rol si existe
-        ROLE_COLORS = {
-            "ALUMNO": (235,200,40),
-            "MAESTRO": (200,200,255),
-            "COLABORADOR": (255,170,110),
-        }
-        if getattr(self.game, "selected_role", None) in ROLE_COLORS:
-            self.player.color = ROLE_COLORS[self.game.selected_role]
+        selected_role = getattr(self.game, "selected_role", None) or "ALUMNO"
+        self.role_profile = ROLE_PROFILES.get(selected_role, ROLE_PROFILES["ALUMNO"])
+        self.selected_role = selected_role
+        self.player = Player(
+            spawn_x,
+            spawn_y,
+            role=selected_role,
+            role_profile=self.role_profile,
+        )
+        player_color = self.role_profile.get("color")
+        if player_color:
+            self.player.color = player_color
 
         world_w, world_h = self.map.world_size()
         room_spots = []
@@ -231,7 +401,13 @@ class PlayScene(Scene):
         self.message_text = ""
         self.message_timer = 0.0
 
-        self.planner = ActionPlanner(self.specialists, self.map, player=self.player, max_parallel=80)
+        self.planner = ActionPlanner(
+            self.specialists,
+            self.map,
+            player=self.player,
+            max_parallel=80,
+            role_profile=self.role_profile,
+        )
         self.decision_status = None
         self.font_overlay = load_ui_font(18)
         self.font_overlay_small = load_ui_font(16)
@@ -250,8 +426,12 @@ class PlayScene(Scene):
         self.food_prompt_active = False
         self.food_prompt_timer = 0.0
         self.food_prompt_cooldown = 6.0
+        self.rest_prompt_active = False
+        self.rest_prompt_timer = 0.0
+        self.rest_prompt_cooldown = 8.0
         self.pending_food_task_key: Optional[str] = None
         self.pending_social_task_key: Optional[str] = None
+        self.pending_health_task_key: Optional[str] = None
         self.player_dead = False
         self.rush_cooldown = 0.0
         self.rush_hold = False
@@ -270,7 +450,11 @@ class PlayScene(Scene):
         self.prompt_counter = 0
         self.hud_scroll = 0.0
         self.hud_scroll_max = 0.0
-        self.controls_hint = "Controles: WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes"
+        profile_hint = self.role_profile.get("controls_hint")
+        if profile_hint:
+            self.controls_hint = profile_hint
+        else:
+            self.controls_hint = "Controles: WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes | H ayuda"
         self.minimap_scale = 0.12
         self.minimap_base = self._build_minimap_surface()
         self.minimap_rect = self.minimap_base.get_rect() if self.minimap_base else pygame.Rect(0, 0, 0, 0)
@@ -279,6 +463,23 @@ class PlayScene(Scene):
         self.interaction_font = load_ui_font(16)
         if self.interaction_font is None:
             self.interaction_font = pygame.font.SysFont("arial", 16, bold=True)
+        self.controls_overlay_lines = list(self.role_profile.get("instructions", []))
+        if not self.controls_overlay_lines:
+            self.controls_overlay_lines = [
+                "WASD: moverte",
+                "E: interactuar",
+                "H: abrir/cerrar ayuda",
+            ]
+        self.controls_overlay_title = {
+            "ALUMNO": "Guía para alumnos",
+            "MAESTRO": "Guía para maestros",
+            "COLABORADOR": "Guía para colaboradores",
+        }.get(selected_role, "Guía del campus")
+        self.show_controls_overlay = False
+        self.help_hold = False
+        self.help_overlay_auto = False
+        self.help_auto_timer = 0.0
+        self._show_role_intro()
 
     def _build_minimap_surface(self) -> pygame.Surface:
         world_w, world_h = self.map.world_size()
@@ -302,6 +503,24 @@ class PlayScene(Scene):
                 pygame.draw.rect(base, (60, 90, 140, 180), scaled, border_radius=4)
         pygame.draw.rect(base, (22, 30, 42, 220), base.get_rect(), width=2, border_radius=8)
         return base
+
+    def _show_role_intro(self) -> None:
+        greeting = self.role_profile.get("greeting")
+        if greeting:
+            self._set_message(greeting, 4.0)
+            self.player.push_alert(greeting)
+            self.player.note_interaction(greeting)
+        intro_lines = list(self.role_profile.get("intro_lines", []))
+        if intro_lines:
+            for line in intro_lines:
+                self._log_action(line)
+        self._log_action(f"Rol seleccionado: {self.selected_role.title()}")
+        if self.controls_overlay_lines:
+            self.show_controls_overlay = True
+            self.help_overlay_auto = True
+            self.help_auto_timer = 8.0
+        help_hint = self.role_profile.get("help_hint") or "Pulsa H para volver a ver los controles cuando quieras."
+        self.player.push_alert(help_hint)
 
     def _rebuild_map_backdrop(self) -> None:
         if self._map_buffer is None:
@@ -569,6 +788,33 @@ class PlayScene(Scene):
         pygame.draw.rect(surface, (18, 24, 36), rect, width=2, border_radius=8)
         self.minimap_rect = rect
 
+    def _draw_controls_overlay(self, surface: pygame.Surface) -> None:
+        if not self.show_controls_overlay:
+            return
+        overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        overlay.fill((10, 12, 20, 160))
+        screen_rect = surface.get_rect()
+        panel_w = min(520, screen_rect.width - 160)
+        panel_h = min(460, screen_rect.height - 160)
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        pygame.draw.rect(panel, (18, 26, 38, 240), panel.get_rect(), border_radius=24)
+        pygame.draw.rect(panel, (86, 120, 180, 255), panel.get_rect(), width=3, border_radius=24)
+        title = self.font_overlay.render(self.controls_overlay_title, True, (240, 245, 255))
+        panel.blit(title, (28, 24))
+        y = 24 + title.get_height() + 12
+        small = self.font_overlay_small
+        for line in self.controls_overlay_lines:
+            text = small.render(str(line), True, (220, 230, 240))
+            panel.blit(text, (32, y))
+            y += text.get_height() + 6
+            if y > panel_h - 80:
+                break
+        footer_text = self.role_profile.get("help_footer") or "Pulsa H para cerrar la ayuda"
+        footer = small.render(footer_text, True, (200, 210, 230))
+        panel.blit(footer, (32, panel_h - footer.get_height() - 32))
+        overlay.blit(panel, panel.get_rect(center=screen_rect.center))
+        surface.blit(overlay, (0, 0))
+
     def handle_event(self, event):
         if event.type == pygame.MOUSEWHEEL:
             mx, my = pygame.mouse.get_pos()
@@ -648,7 +894,14 @@ class PlayScene(Scene):
 
         if self.food_prompt_cooldown > 0:
             self.food_prompt_cooldown = max(0.0, self.food_prompt_cooldown - dt)
-        if not self.dialogue and not self.decision_prompt and not self.chat_window:
+        if self.rest_prompt_cooldown > 0:
+            self.rest_prompt_cooldown = max(0.0, self.rest_prompt_cooldown - dt)
+        if self.help_overlay_auto:
+            self.help_auto_timer = max(0.0, self.help_auto_timer - dt)
+            if self.help_auto_timer <= 0:
+                self.help_overlay_auto = False
+                self.show_controls_overlay = False
+        if not self.dialogue and not self.decision_prompt and not self.chat_window and not self.show_controls_overlay:
             self.player.handle_input(keys)
         else:
             self.player.vx = 0.0
@@ -657,6 +910,7 @@ class PlayScene(Scene):
         player_room = self.map.room_for_rect(self.player.rect)
         self.player.current_room = player_room.get("name") if player_room else None
         self._maybe_activate_food_prompt(dt)
+        self._maybe_activate_rest_prompt(dt)
 
         if keys.get("rush"):
             if not self.rush_hold and self.rush_cooldown <= 0:
@@ -683,6 +937,15 @@ class PlayScene(Scene):
             self.message_hold = True
         else:
             self.message_hold = False
+
+        if keys.get("help"):
+            if not self.help_hold:
+                self.show_controls_overlay = not self.show_controls_overlay
+                if self.show_controls_overlay:
+                    self.help_overlay_auto = False
+            self.help_hold = True
+        else:
+            self.help_hold = False
 
         for n in self.npcs:
             n.update(dt, self.map)
@@ -712,10 +975,19 @@ class PlayScene(Scene):
             if self.message_timer <= 0:
                 self.message_text = ""
 
-        if keys["interact"] and not self.interact_hold and not self.dialogue and not self.decision_prompt and not self.chat_window:
+        if (
+            keys["interact"]
+            and not self.interact_hold
+            and not self.dialogue
+            and not self.decision_prompt
+            and not self.chat_window
+            and not self.show_controls_overlay
+        ):
             self.interact_hold = True
             handled = False
-            if self.food_prompt_active and self._consume_food_prompt():
+            if self.rest_prompt_active and self._consume_rest_prompt():
+                handled = True
+            elif self.food_prompt_active and self._consume_food_prompt():
                 handled = True
             elif self._handle_greeting_response():
                 handled = True
@@ -796,6 +1068,7 @@ class PlayScene(Scene):
         if self.active_fight:
             self._draw_fight_banner(surface)
         if self.dialogue: self.dialogue.draw(surface)
+        self._draw_controls_overlay(surface)
         if self.player_dead:
             self._draw_game_over(surface)
 
@@ -863,16 +1136,13 @@ class PlayScene(Scene):
     def _open_decision_prompt(self):
         current_room = self.player.current_room or "el campus"
         question = f"¿Qué quieres coordinar cerca de {current_room}?"
-        options = [
-            "Planear apoyo académico",
-            "Montar un taller",
-            "Armar plan de seguridad",
+        role_options = self.role_profile.get("decision_options") or [
+            ("Planear apoyo académico", "Apoyo académico"),
+            ("Montar un taller", "Montar taller"),
+            ("Armar plan de seguridad", "Plan de seguridad"),
         ]
-        self.decision_option_map = {
-            "Planear apoyo académico": "Apoyo académico",
-            "Montar un taller": "Montar taller",
-            "Armar plan de seguridad": "Plan de seguridad",
-        }
+        options = [label for (label, _cat) in role_options]
+        self.decision_option_map = {label: cat for (label, cat) in role_options}
         self.decision_prompt = DecisionPrompt("Plan inmediato", question, options, self.font_overlay, self.font_overlay_small)
 
     def _on_decision_selected(self, selection: Optional[str]):
@@ -984,6 +1254,16 @@ class PlayScene(Scene):
                 if self.pending_food_task_key:
                     self._complete_auto_task(self.pending_food_task_key, False)
                     self.pending_food_task_key = None
+        if self.rest_prompt_active:
+            self.rest_prompt_timer -= dt
+            if self.rest_prompt_timer <= 0:
+                self.rest_prompt_active = False
+                self.rest_prompt_cooldown = 12.0
+                self.player.push_alert("Necesitabas descansar y lo pospusiste")
+                self.player.take_damage(6.0)
+                if self.pending_health_task_key:
+                    self._complete_auto_task(self.pending_health_task_key, False)
+                    self.pending_health_task_key = None
 
         expired: list[dict[str, object]] = []
         for task in self.player_tasks:
@@ -1055,6 +1335,9 @@ class PlayScene(Scene):
         elif template.get("type") == "social":
             self.pending_social_task_key = entry["auto_key"]
             self._trigger_random_greeting(force=True, task_key=entry["auto_key"])
+        elif template.get("type") == "health":
+            self.pending_health_task_key = entry["auto_key"]
+            self._activate_rest_prompt(force=True)
         marker_color = (200, 220, 255) if focus_room else (245, 240, 200)
         self._add_activity_marker(entry["name"], pos=pygame.Vector2(self.player.rect.center), color=marker_color)
         if entry.get("auto"):
@@ -1129,6 +1412,14 @@ class PlayScene(Scene):
         if self.player.hunger <= 32 and self.food_prompt_cooldown <= 0:
             self._activate_food_prompt()
 
+    def _maybe_activate_rest_prompt(self, dt: float) -> None:
+        if self.rest_prompt_active:
+            return
+        if not getattr(self.player, "hp", 0):
+            return
+        if getattr(self.player, "hp", 0) <= 45 and self.rest_prompt_cooldown <= 0:
+            self._activate_rest_prompt()
+
     def _consume_food_prompt(self) -> bool:
         if not self.food_prompt_active:
             return False
@@ -1143,6 +1434,37 @@ class PlayScene(Scene):
         if self.pending_food_task_key:
             self._complete_auto_task(self.pending_food_task_key, True)
             self.pending_food_task_key = None
+        return True
+
+    def _activate_rest_prompt(self, force: bool = False) -> None:
+        if self.rest_prompt_active:
+            return
+        if not force:
+            if getattr(self.player, "hp", 100.0) > 45:
+                return
+            if self.rest_prompt_cooldown > 0:
+                return
+        self.rest_prompt_active = True
+        self.rest_prompt_timer = 14.0 if force else 10.0
+        self.rest_prompt_cooldown = 18.0
+        self.player.push_alert("Presiona E para tomar un descanso y recuperar salud")
+        self._set_message("Necesitas un descanso. Pulsa E para recuperar salud.", 3.0)
+        self._log_action("Descanso disponible: pulsa E para recuperarte")
+
+    def _consume_rest_prompt(self) -> bool:
+        if not self.rest_prompt_active:
+            return False
+        self.rest_prompt_active = False
+        self.rest_prompt_timer = 0.0
+        self.rest_prompt_cooldown = 18.0
+        self.player.restore_health(35.0)
+        self.player.adjust_social(+2.0)
+        self.player.note_interaction("Tomaste un descanso reparador")
+        self._set_message("Descansaste y recuperaste salud", 1.8)
+        self._add_activity_marker("Descanso recuperador", color=(180, 220, 200))
+        if self.pending_health_task_key:
+            self._complete_auto_task(self.pending_health_task_key, True)
+            self.pending_health_task_key = None
         return True
 
     def _handle_greeting_response(self) -> bool:
@@ -1221,6 +1543,8 @@ class PlayScene(Scene):
                     self.player.adjust_social(float(reward["social"]))
                 if "hunger" in reward:
                     self.player.restore_hunger(float(reward["hunger"]))
+                if "health" in reward:
+                    self.player.restore_health(float(reward["health"]))
                 self.player.adjust_relationship("Equipo", 5)
                 self.player.note_interaction(f"Tarea {task['name']} completada")
                 self._add_activity_marker(f"✔ {task['name']}")
@@ -1238,6 +1562,8 @@ class PlayScene(Scene):
             prompt_id = task.pop("prompt_id", None)
             if prompt_id:
                 self._remove_prompt_by_id(prompt_id)
+            if self.pending_health_task_key and key == self.pending_health_task_key:
+                self.pending_health_task_key = None
             return
 
     def _check_player_survival(self) -> None:
@@ -1672,13 +1998,34 @@ class PlayScene(Scene):
         return tags
 
     def _templates_for_room(self, room_name: Optional[str]) -> list[dict[str, object]]:
-        base = [
-            {"name": "Apoyo académico urgente", "planner_category": "Apoyo académico", "penalty": 10, "reward": {"grades": 5}},
-            {"name": "Montar taller relámpago", "planner_category": "Montar taller", "penalty": 9, "reward": {"grades": 3, "social": 4}},
-            {"name": "Plan rápido de seguridad", "planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 4}},
-            {"name": "Comer algo rápido", "type": "food", "penalty": 8, "reward": {"hunger": 35}},
-            {"name": "Charla con aliados", "type": "social", "penalty": 9, "reward": {"social": 9}},
-        ]
+        role = getattr(self.player, "role", "ALUMNO")
+        if role == "MAESTRO":
+            base = [
+                {"name": "Preparar evaluación", "planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 6}},
+                {"name": "Laboratorio demostrativo", "planner_category": "Montar taller", "penalty": 8, "reward": {"grades": 4, "social": 3}},
+                {"name": "Supervisión docente", "planner_category": "Plan de seguridad", "penalty": 7, "reward": {"social": 4}},
+                {"name": "Pausa para café", "type": "food", "penalty": 6, "reward": {"hunger": 30, "health": 10}},
+                {"name": "Descanso en sala de maestros", "type": "health", "penalty": 5, "reward": {"health": 30}},
+                {"name": "Mentoría con alumno", "type": "social", "penalty": 7, "reward": {"social": 8, "grades": 2}},
+            ]
+        elif role == "COLABORADOR":
+            base = [
+                {"name": "Atender ventanilla saturada", "planner_category": "Apoyo académico", "penalty": 8, "reward": {"social": 5}},
+                {"name": "Organizar stand de apoyo", "planner_category": "Montar taller", "penalty": 8, "reward": {"social": 5, "grades": 2}},
+                {"name": "Inspección de seguridad", "planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 4}},
+                {"name": "Refuerzo de energía", "type": "food", "penalty": 6, "reward": {"hunger": 35, "health": 5}},
+                {"name": "Pausa de hidratación", "type": "health", "penalty": 5, "reward": {"health": 30}},
+                {"name": "Charla con el equipo", "type": "social", "penalty": 7, "reward": {"social": 9}},
+            ]
+        else:
+            base = [
+                {"name": "Estudio urgente", "planner_category": "Apoyo académico", "penalty": 10, "reward": {"grades": 6}},
+                {"name": "Club relámpago", "planner_category": "Montar taller", "penalty": 8, "reward": {"social": 5, "grades": 2}},
+                {"name": "Brigada estudiantil", "planner_category": "Plan de seguridad", "penalty": 7, "reward": {"social": 4}},
+                {"name": "Snack revitalizante", "type": "food", "penalty": 6, "reward": {"hunger": 40}},
+                {"name": "Descanso de biblioteca", "type": "health", "penalty": 6, "reward": {"health": 28}},
+                {"name": "Charla con compañeros", "type": "social", "penalty": 7, "reward": {"social": 10}},
+            ]
 
         templates = [dict(tpl) for tpl in base]
         tags = self._room_tags(room_name)
@@ -1690,21 +2037,47 @@ class PlayScene(Scene):
 
         if tags:
             if any(tag in tags for tag in ("cafeteria", "comedor", "food", "cafe")):
-                templates.append(with_room("Break en la cafetería", {"type": "food", "penalty": 7, "reward": {"hunger": 40, "social": 4}}))
-                templates.append(with_room("Servicio de bandejas", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5}}))
+                if role == "MAESTRO":
+                    templates.append(with_room("Café con colegas", {"type": "social", "penalty": 6, "reward": {"social": 6}}))
+                    templates.append(with_room("Plan de clase en cafetería", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5}}))
+                elif role == "COLABORADOR":
+                    templates.append(with_room("Reabastecer cafetería", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5}}))
+                    templates.append(with_room("Atención express de pedidos", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"social": 4}}))
+                else:
+                    templates.append(with_room("Repaso en la cafetería", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5}}))
+                    templates.append(with_room("Snack con amigos", {"type": "food", "penalty": 6, "reward": {"hunger": 30, "social": 4}}))
             if any(tag in tags for tag in ("laboratorio", "lab", "ciencia", "ingenieria")):
-                templates.append(with_room("Experimento guiado", {"planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 6}}))
-                templates.append(with_room("Mantenimiento seguro", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 3}}))
+                if role == "MAESTRO":
+                    templates.append(with_room("Supervisar experimento", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 4}}))
+                    templates.append(with_room("Diseñar práctica guiada", {"planner_category": "Montar taller", "penalty": 8, "reward": {"grades": 5}}))
+                elif role == "COLABORADOR":
+                    templates.append(with_room("Abastecer laboratorio", {"planner_category": "Montar taller", "penalty": 8, "reward": {"social": 4, "grades": 2}}))
+                else:
+                    templates.append(with_room("Experimento guiado", {"planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 6}}))
             if any(tag in tags for tag in ("biblioteca", "library", "lectura", "estudio")):
-                templates.append(with_room("Club de lectura", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5, "social": 2}}))
+                if role == "MAESTRO":
+                    templates.append(with_room("Revisión de bibliografía", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5}}))
+                elif role == "COLABORADOR":
+                    templates.append(with_room("Ordenar estanterías", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 4}}))
+                else:
+                    templates.append(with_room("Club de lectura", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5, "social": 2}}))
             if any(tag in tags for tag in ("gimnasio", "deporte", "cancha", "pista")):
-                templates.append(with_room("Entrenamiento express", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5, "grades": 1}}))
+                if role == "COLABORADOR":
+                    templates.append(with_room("Revisar equipo deportivo", {"planner_category": "Plan de seguridad", "penalty": 7, "reward": {"social": 4}}))
+                else:
+                    templates.append(with_room("Entrenamiento express", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5, "grades": 1}}))
             if any(tag in tags for tag in ("auditorio", "teatro", "arte", "musica", "danza")):
-                templates.append(with_room("Ensayo creativo", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 6}}))
+                if role == "COLABORADOR":
+                    templates.append(with_room("Montar evento cultural", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 6}}))
+                else:
+                    templates.append(with_room("Ensayo creativo", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 6}}))
             if any(tag in tags for tag in ("seguridad", "guardia", "administracion", "prefectura")):
                 templates.append(with_room("Simulacro coordinado", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 5}}))
             if any(tag in tags for tag in ("residencia", "dormitorio", "descanso", "salon")):
-                templates.append(with_room("Ronda de bienestar", {"type": "social", "penalty": 8, "reward": {"social": 8}}))
+                if role == "COLABORADOR":
+                    templates.append(with_room("Supervisar residencias", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 4}}))
+                else:
+                    templates.append(with_room("Ronda de bienestar", {"type": "social", "penalty": 8, "reward": {"social": 8}}))
 
         if room_name and not any(room_name in tpl["name"] for tpl in templates):
             templates.append(with_room("Actividad rápida", {"planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 4}}))

@@ -75,11 +75,13 @@ class ActionPlanner:
         tilemap,
         player: Optional["Character"] = None,
         max_parallel: int = 64,
+        role_profile: Optional[dict] = None,
     ) -> None:
         self.characters: List["Character"] = list(characters)
         self.rotation: deque["Character"] = deque(self.characters)
         self.tilemap = tilemap
         self.player = player
+        self.role_styles = dict(role_profile.get("planner_styles", {})) if role_profile else {}
         self.player_room: Optional[str] = None
 
         self.world_w, self.world_h = self.tilemap.world_size()
@@ -177,6 +179,7 @@ class ActionPlanner:
             action.generated_by_event = False
         if not action:
             return None
+        action = self._style_action_for_role(action, category, focus_room)
         action.compatibility = set(action.compatibility)
         action.compatibility.add("lider")
         if focus_room:
@@ -193,6 +196,35 @@ class ActionPlanner:
         self.history.prepend(f"El jugador decidió {action.name}")
         self.last_event = f"Decisión jugador: {action.category}"
         self.enqueue_action(action)
+        return action
+
+    def _style_action_for_role(
+        self,
+        action: Action,
+        original_category: str,
+        focus_room: Optional[str],
+    ) -> Action:
+        if not self.role_styles:
+            return action
+        base_key = action.category
+        style = self.role_styles.get(base_key) or self.role_styles.get(original_category)
+        if not style:
+            return action
+        room_name = focus_room or action.target_room or "el campus"
+        display_category = style.get("category")
+        if display_category:
+            action.category = display_category
+        name_options = style.get("names") or []
+        if name_options:
+            template = random.choice(name_options)
+            action.name = template.replace("{room}", room_name)
+        else:
+            rename = style.get("name")
+            if isinstance(rename, str):
+                action.name = rename.replace("{room}", room_name)
+        extra_priority = style.get("priority_bonus")
+        if isinstance(extra_priority, (int, float)):
+            action.priority = max(0.1, action.priority + float(extra_priority))
         return action
 
     def get_status_snapshot(self) -> Dict[str, object]:

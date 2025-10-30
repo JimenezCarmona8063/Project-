@@ -43,6 +43,7 @@ KEY_INVENTORY = "i"
 KEY_ACTION_RUSH = "q"
 KEY_FIGHT = "f"
 KEY_MESSAGE = "m"
+KEY_HELP = "h"
 
 # -----------------------------
 # Gameplay base

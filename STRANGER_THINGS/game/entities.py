@@ -339,7 +339,17 @@ class Character(Entity):
 
 
 class Player(Character):
-    def __init__(self, x, y):
+    def __init__(self, x, y, role: str = "ALUMNO", role_profile: Optional[dict] = None):
+        profile = dict(role_profile or {})
+        compat = profile.get(
+            "compatibility",
+            ["lider", "academia", "colaboracion"],
+        )
+        aptitudes = profile.get(
+            "aptitudes",
+            ["Apoyo académico", "Tutoría intensiva"],
+        )
+        max_hp = int(profile.get("max_hp", 120))
         super().__init__(
             x,
             y,
@@ -349,18 +359,20 @@ class Player(Character):
             color=YELLOW,
             importance=6,
             speed=PLAYER_SPEED,
-            max_hp=120,
-            compatibility=["lider", "academia", "colaboracion"],
-            aptitudes=["Apoyo académico", "Tutoría intensiva", "Logística escolar", "Plan de seguridad"],
+            max_hp=max_hp,
+            compatibility=compat,
+            aptitudes=aptitudes,
         )
+        self.role = role
+        self.role_profile = profile
         self.inventory = []
         self.interact_cooldown = 0.0
         self.relationships: dict[str, float] = {}
         self.interaction_log: deque[str] = deque(maxlen=6)
         self.mood = "Neutral"
-        self.grades = 100.0
-        self.social_health = 100.0
-        self.hunger = 100.0
+        self.grades = float(profile.get("grades_start", 100.0))
+        self.social_health = float(profile.get("social_start", 100.0))
+        self.hunger = float(profile.get("hunger_start", 100.0))
         self.alerts: deque[str] = deque(maxlen=6)
         self._last_alert: Optional[str] = None
         self.pending_greeting: Optional[str] = None
@@ -453,6 +465,13 @@ class Player(Character):
         self.hunger = max(0.0, min(100.0, self.hunger + amount))
         if amount > 0:
             self.note_interaction("Te alimentaste")
+
+    def restore_health(self, amount: float) -> None:
+        if amount <= 0:
+            return
+        self.hp = max(0.0, min(self.max_hp, self.hp + float(amount)))
+        self.note_interaction("Recuperaste salud")
+        self.push_alert("Te sientes con más energía")
 
     def _update_needs(self, dt: float) -> None:
         decay = dt * 0.9
