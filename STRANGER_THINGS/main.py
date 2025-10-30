@@ -1,6 +1,7 @@
 # main.py — versión ordenada para evitar "MenuScene undefined"
 import os, sys, json, random, math
-from typing import Optional
+from collections import deque
+from typing import Callable, Optional
 
 import pygame
 
@@ -15,7 +16,7 @@ from settings import (
 )
 
 from core.engine import Camera2D, Scene, draw_text
-from game.ui import draw_hud, Button, Slider, DecisionPrompt
+from game.ui import draw_hud, draw_action_feed, Button, Slider, DecisionPrompt
 
 from game.entities import (
     Player,
@@ -62,12 +63,20 @@ class PlayScene(Scene):
         # 1) Cargar TMX
         self.map = TmxMap()  # usa settings.TMX_MAP_FILE
 
-        # 2) Cámara al tamaño del mapa sin el panel lateral
-        view_w = max(320, self.game.screen.get_width() - HUD_PANEL_WIDTH)
-        view_h = self.game.screen.get_height()
-        self.camera = Camera2D(*self.map.world_size(), view_w, view_h)
+        # 2) Cámara al tamaño del mapa sin el panel lateral y con zoom dinámico
         self.panel_width = HUD_PANEL_WIDTH
-        self.map_view = pygame.Rect(self.panel_width, 0, view_w, view_h)
+        self.bottom_feed_height = 180
+        total_w = self.game.screen.get_width()
+        total_h = self.game.screen.get_height()
+        map_w = max(320, total_w - self.panel_width)
+        map_h = max(240, total_h - self.bottom_feed_height)
+        self.map_zoom = 1.18
+        cam_w = max(160, int(map_w / self.map_zoom))
+        cam_h = max(160, int(map_h / self.map_zoom))
+        self.camera = Camera2D(*self.map.world_size(), cam_w, cam_h)
+        self.map_view = pygame.Rect(self.panel_width, 0, map_w, map_h)
+        self.action_feed_rect = pygame.Rect(self.panel_width, self.map_view.bottom, map_w, self.bottom_feed_height)
+        self._map_buffer = pygame.Surface((self.camera.screen_w, self.camera.screen_h), pygame.SRCALPHA)
 
 
         # 3) Player en el spawn del TMX
@@ -247,13 +256,291 @@ class PlayScene(Scene):
         if self.activity_font is None:
             self.activity_font = pygame.font.SysFont("arial", 16, bold=True)
         self.room_activity_map = self._build_room_activity_map()
+        self.action_prompts: list[dict[str, object]] = []
+        self.action_history: deque[dict[str, object]] = deque(maxlen=18)
+        self.prompt_counter = 0
+        self.hud_scroll = 0.0
+        self.hud_scroll_max = 0.0
+        self.controls_hint = "Controles: WASD moverte | E interactuar | Y/N responder | Q ráfaga | F pelea | M mensajes"
+        self.minimap_scale = 0.12
+        self.minimap_base = self._build_minimap_surface()
+        self.minimap_rect = self.minimap_base.get_rect() if self.minimap_base else pygame.Rect(0, 0, 0, 0)
+
+    def _build_minimap_surface(self) -> pygame.Surface:
+        world_w, world_h = self.map.world_size()
+        target = 240
+        scale = min(self.minimap_scale, target / max(world_w, 1), target / max(world_h, 1))
+        scale = max(0.06, min(0.25, scale))
+        self.minimap_scale = scale
+        width = max(80, int(world_w * scale))
+        height = max(80, int(world_h * scale))
+        base = pygame.Surface((width, height), pygame.SRCALPHA)
+        base.fill((12, 16, 24, 220))
+        for room in getattr(self.map, "rooms", []):
+            rect = room.get("rect")
+            if isinstance(rect, pygame.Rect):
+                scaled = pygame.Rect(
+                    int(rect.x * scale),
+                    int(rect.y * scale),
+                    max(2, int(rect.width * scale)),
+                    max(2, int(rect.height * scale)),
+                )
+                pygame.draw.rect(base, (60, 90, 140, 180), scaled, border_radius=4)
+        pygame.draw.rect(base, (22, 30, 42, 220), base.get_rect(), width=2, border_radius=8)
+        return base
+
+    def _ensure_map_surfaces(self, surface: pygame.Surface) -> None:
+        map_width = max(320, surface.get_width() - self.panel_width)
+        map_height = max(240, surface.get_height() - self.bottom_feed_height)
+        if self.map_view.width != map_width or self.map_view.height != map_height:
+            self.map_view.size = (map_width, map_height)
+            self.action_feed_rect.topleft = (self.panel_width, self.map_view.bottom)
+            self.action_feed_rect.size = (map_width, self.bottom_feed_height)
+        buffer_w = max(160, int(self.map_view.width / self.map_zoom))
+        buffer_h = max(160, int(self.map_view.height / self.map_zoom))
+        if (
+            self._map_buffer.get_width() != buffer_w
+            or self._map_buffer.get_height() != buffer_h
+        ):
+            self.camera.screen_w = buffer_w
+            self.camera.screen_h = buffer_h
+            self.camera.clamp()
+            self._map_buffer = pygame.Surface((buffer_w, buffer_h), pygame.SRCALPHA)
+
+    def _push_action_prompt(
+        self,
+        text: str,
+        options: Optional[list[dict[str, object]]] = None,
+        duration: Optional[float] = 6.0,
+        tag: Optional[str] = None,
+        on_timeout: Optional[Callable[[], object]] = None,
+    ) -> str:
+        self.prompt_counter += 1
+        prompt_id = f"P{self.prompt_counter}"
+        entry: dict[str, object] = {
+            "id": prompt_id,
+            "text": text,
+            "options": [],
+            "timer": duration,
+            "tag": tag,
+            "on_timeout": on_timeout,
+        }
+        if options:
+            for opt in options:
+                opt_dict = dict(opt)
+                keycode = opt_dict.get("key")
+                if keycode and not opt_dict.get("display"):
+                    opt_dict["display"] = pygame.key.name(keycode).upper()
+                opt_dict["prompt_id"] = prompt_id
+                entry["options"].append(opt_dict)
+        self.action_prompts.insert(0, entry)
+        return prompt_id
+
+    def _remove_prompt_by_id(self, prompt_id: Optional[str]) -> None:
+        if not prompt_id:
+            return
+        for prompt in list(self.action_prompts):
+            if prompt.get("id") == prompt_id:
+                self.action_prompts.remove(prompt)
+                break
+
+    def _log_action(self, message, color: Optional[tuple[int, int, int]] = None) -> None:
+        if not message:
+            return
+        entry_color = color or (220, 220, 230)
+        text = message
+        if isinstance(message, tuple):
+            text, entry_color = message
+        if isinstance(text, (list, dict)):
+            text = str(text)
+        self.action_history.appendleft({"text": str(text), "color": entry_color})
+        while len(self.action_history) > self.action_history.maxlen:
+            self.action_history.pop()
+
+    def _update_action_prompts(self, dt: float) -> None:
+        if not self.action_prompts:
+            return
+        for prompt in list(self.action_prompts):
+            timer = prompt.get("timer")
+            if timer is None:
+                continue
+            timer = max(0.0, float(timer) - dt)
+            prompt["timer"] = timer
+            if timer <= 0:
+                on_timeout = prompt.get("on_timeout")
+                result = on_timeout() if callable(on_timeout) else None
+                if result:
+                    self._log_action(result)
+                if prompt in self.action_prompts:
+                    self.action_prompts.remove(prompt)
+
+    def _handle_prompt_key(self, key: int) -> bool:
+        handled_prompt = None
+        handled_result = None
+        for prompt in list(self.action_prompts):
+            for option in prompt.get("options", []):
+                if option.get("key") == key:
+                    callback = option.get("callback")
+                    if callable(callback):
+                        handled_result = callback()
+                    if not handled_result:
+                        label = option.get("label")
+                        if label:
+                            handled_result = label
+                    handled_prompt = prompt
+                    break
+            if handled_prompt:
+                break
+        if handled_prompt:
+            if handled_result:
+                self._log_action(handled_result)
+            if handled_prompt in self.action_prompts:
+                self.action_prompts.remove(handled_prompt)
+            return True
+        return False
+
+    def _accept_auto_task(self, key: Optional[str]) -> str:
+        if not key:
+            return ""
+        for task in self.player_tasks:
+            if task.get("done"):
+                continue
+            if task.get("auto_key") == key or task.get("name") == key:
+                task["accepted"] = True
+                if not task.get("status") or task.get("status") in ("Pendiente", "Planificada"):
+                    task["status"] = "Aceptada"
+                task.pop("prompt_id", None)
+                self.player.note_interaction(f"Aceptaste {task['name']}")
+                self.player.adjust_relationship("Equipo", 2)
+                return f"Aceptaste {task['name']}"
+        return ""
+
+    def _reject_auto_task(self, key: Optional[str]) -> str:
+        if not key:
+            return ""
+        name = None
+        for task in self.player_tasks:
+            if task.get("auto_key") == key or task.get("name") == key:
+                name = task.get("name")
+                break
+        self._complete_auto_task(key, False)
+        if name:
+            return f"Rechazaste {name}"
+        return "Rechazaste la actividad"
+
+    def _auto_task_timeout(self, key: Optional[str]) -> str:
+        if not key:
+            return ""
+        for task in self.player_tasks:
+            if task.get("done"):
+                continue
+            if task.get("auto_key") == key or task.get("name") == key:
+                if task.get("accepted"):
+                    return ""
+                name = task.get("name")
+                self._complete_auto_task(key, False)
+                if name:
+                    return f"Perdiste {name}"
+                return "Perdiste una actividad"
+        return ""
+
+    def _resolve_greeting_choice(self, accept: bool, manual: bool = True) -> str:
+        if not self.active_greeting:
+            return ""
+        agent = self.active_greeting.get("agent")
+        if not agent:
+            self.active_greeting = None
+            return ""
+        if accept:
+            if agent.rect.colliderect(self.player.rect.inflate(60, 60)):
+                return self._finish_greeting(agent, True, manual)
+            self.active_greeting["pending_accept"] = True
+            self.active_greeting["manual_accept"] = manual
+            wait_text = f"Esperas a que {agent.name} llegue"
+            self._set_message(wait_text, 1.4)
+            return wait_text
+        return self._finish_greeting(agent, False, manual)
+
+    def _resolve_greeting_timeout(self) -> str:
+        if not self.active_greeting:
+            return ""
+        agent = self.active_greeting.get("agent")
+        if not agent:
+            self.active_greeting = None
+            return ""
+        return self._finish_greeting(agent, False, manual=False)
+
+    def _finish_greeting(self, agent, success: bool, manual: bool = True) -> str:
+        if not agent:
+            return ""
+        if not self.active_greeting:
+            return ""
+        prompt_id = self.active_greeting.get("prompt_id")
+        task_key = self.active_greeting.get("task_key")
+        response = ""
+        if success:
+            self.active_greeting["responded"] = True
+            self.player.resolve_greeting(agent.name, True)
+            self.player.adjust_relationship(agent.name, 8)
+            response = f"Saludaste a {agent.name}"
+            self._set_message(response, 1.8)
+            self._add_activity_marker(response, pos=agent.rect.center, color=(200, 220, 255))
+            if self.pending_social_task_key and task_key == self.pending_social_task_key:
+                self._complete_auto_task(task_key, True)
+                self.pending_social_task_key = None
+        else:
+            self.player.resolve_greeting(agent.name, False)
+            penalty = -4 if manual else -6
+            self.player.adjust_relationship(agent.name, penalty)
+            response = f"Ignoraste a {agent.name}"
+            self._set_message(response, 1.8)
+            if self.pending_social_task_key and task_key == self.pending_social_task_key:
+                self._complete_auto_task(task_key, False)
+                self.pending_social_task_key = None
+        agent.clear_interaction_request()
+        self.active_greeting = None
+        if prompt_id:
+            self._remove_prompt_by_id(prompt_id)
+        return response
+
+    def _draw_minimap(self, surface: pygame.Surface) -> None:
+        if not self.minimap_base:
+            return
+        mini = self.minimap_base.copy()
+        scale = self.minimap_scale
+        for npc in self.npcs:
+            pos = (int(npc.rect.centerx * scale), int(npc.rect.centery * scale))
+            pygame.draw.circle(mini, (120, 170, 255), pos, 2)
+        for agent in self.specialists:
+            if getattr(agent, "visible", True):
+                pos = (int(agent.rect.centerx * scale), int(agent.rect.centery * scale))
+                pygame.draw.circle(mini, (130, 230, 180), pos, 2)
+        pos_player = (int(self.player.rect.centerx * scale), int(self.player.rect.centery * scale))
+        pygame.draw.circle(mini, (255, 255, 255), pos_player, 4)
+        rect = mini.get_rect()
+        rect.topright = (surface.get_width() - 24, 24)
+        surface.blit(mini, rect.topleft)
+        pygame.draw.rect(surface, (18, 24, 36), rect, width=2, border_radius=8)
+        self.minimap_rect = rect
 
     def handle_event(self, event):
+        if event.type == pygame.MOUSEWHEEL:
+            mx, my = pygame.mouse.get_pos()
+            if mx <= self.panel_width:
+                self.hud_scroll = max(0.0, min(self.hud_scroll_max, self.hud_scroll - event.y * 40))
         if self.player_dead:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.game.play_scene = None
                 self.game.change_scene(MenuScene(self.game))
             return
+        if (
+            event.type == pygame.KEYDOWN
+            and not self.dialogue
+            and not self.decision_prompt
+            and not self.message_prompt
+        ):
+            if self._handle_prompt_key(event.key):
+                return
         if self.message_prompt:
             self.message_prompt.handle_event(event)
             if self.message_prompt.finished:
@@ -354,6 +641,7 @@ class PlayScene(Scene):
         self._check_player_survival()
         self._update_fight(dt)
         self._tick_activity_markers(dt)
+        self._update_action_prompts(dt)
 
         if self.message_timer > 0:
             self.message_timer -= dt
@@ -407,25 +695,29 @@ class PlayScene(Scene):
 
     def draw(self, surface):
         surface.fill((12, 14, 22))
-        map_width = max(1, surface.get_width() - self.panel_width)
-        if self.map_view.width != map_width or self.map_view.height != surface.get_height():
-            self.map_view.size = (map_width, surface.get_height())
-            self.camera.screen_w = map_width
-            self.camera.screen_h = surface.get_height()
-        map_surface = surface.subsurface(self.map_view)
-        map_surface.fill((18, 20, 28))
-        self.map.draw(map_surface, self.camera)
+        self._ensure_map_surfaces(surface)
+        self.camera.center_on(self.player.rect)
+        map_buffer = self._map_buffer
+        map_buffer.fill((18, 20, 28, 255))
+        self.map.draw(map_buffer, self.camera)
         for it in self.items:
-            it.draw(map_surface, self.camera)
+            it.draw(map_buffer, self.camera)
         for n in self.npcs:
-            n.draw(map_surface, self.camera)
+            n.draw(map_buffer, self.camera)
         for agent in self.specialists:
-            agent.draw(map_surface, self.camera)
+            agent.draw(map_buffer, self.camera)
         for e in self.enemies:
-            e.draw(map_surface, self.camera)
-        self.player.draw(map_surface, self.camera)
-        self._draw_activity_markers(map_surface)
-        draw_hud(surface, self.player, self.decision_status, self.player_tasks)
+            e.draw(map_buffer, self.camera)
+        self.player.draw(map_buffer, self.camera)
+        self._draw_activity_markers(map_buffer)
+        scaled_map = pygame.transform.smoothscale(map_buffer, self.map_view.size)
+        surface.blit(scaled_map, self.map_view.topleft)
+        self._draw_minimap(surface)
+        max_scroll = draw_hud(surface, self.player, self.decision_status, self.player_tasks, scroll_offset=self.hud_scroll)
+        self.hud_scroll_max = max_scroll
+        if self.hud_scroll > self.hud_scroll_max:
+            self.hud_scroll = self.hud_scroll_max
+        draw_action_feed(surface, self.action_feed_rect, self.action_prompts, list(self.action_history), controls_hint=self.controls_hint)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
         if self.message_prompt:
@@ -604,16 +896,16 @@ class PlayScene(Scene):
         if self.active_greeting:
             self.active_greeting["timer"] -= dt
             agent = self.active_greeting.get("agent")
-            if self.active_greeting["timer"] <= 0 or not agent:
-                if agent and not self.active_greeting.get("responded"):
-                    self.player.resolve_greeting(agent.name, False)
-                    self.player.adjust_relationship(agent.name, -6)
-                    if self.pending_social_task_key and self.active_greeting.get("task_key") == self.pending_social_task_key:
-                        self._complete_auto_task(self.pending_social_task_key, False)
-                        self.pending_social_task_key = None
-                if agent:
-                    agent.clear_interaction_request()
-                self.active_greeting = None
+            if self.active_greeting.get("pending_accept") and agent:
+                if agent.rect.colliderect(self.player.rect.inflate(60, 60)):
+                    manual = bool(self.active_greeting.get("manual_accept", True))
+                    result = self._finish_greeting(agent, True, manual=manual)
+                    if result:
+                        self._log_action(result)
+            elif self.active_greeting["timer"] <= 0 or not agent:
+                result = self._resolve_greeting_timeout()
+                if result:
+                    self._log_action(result)
 
         if self.food_prompt_active:
             self.food_prompt_timer -= dt
@@ -675,6 +967,7 @@ class PlayScene(Scene):
             if entry.get("status") == "Planificada":
                 entry["status"] = f"{source_name} coordina"
         self.player_tasks.append(entry)
+        self._log_action(f"Nueva actividad: {entry['name']}")
         if source_name:
             if focus_room and source_name == focus_room:
                 alert = f"Actividades en {source_name}: {entry['name']}"
@@ -695,6 +988,19 @@ class PlayScene(Scene):
             self._trigger_random_greeting(force=True, task_key=entry["auto_key"])
         marker_color = (200, 220, 255) if focus_room else (245, 240, 200)
         self._add_activity_marker(entry["name"], pos=pygame.Vector2(self.player.rect.center), color=marker_color)
+        if entry.get("auto"):
+            auto_key = entry.get("auto_key")
+            prompt_id = self._push_action_prompt(
+                text=f"¿Ayudar con {entry['name']}?",
+                options=[
+                    {"key": pygame.K_y, "display": "Y", "label": "Aceptar", "callback": lambda key=auto_key: self._accept_auto_task(key)},
+                    {"key": pygame.K_n, "display": "N", "label": "Rechazar", "callback": lambda key=auto_key: self._reject_auto_task(key)},
+                ],
+                duration=8.0,
+                tag="task",
+                on_timeout=lambda key=auto_key: self._auto_task_timeout(key),
+            )
+            entry["prompt_id"] = prompt_id
         return entry
 
     def _check_proximity_task_spawn(self) -> bool:
@@ -773,19 +1079,9 @@ class PlayScene(Scene):
     def _handle_greeting_response(self) -> bool:
         if not self.active_greeting or self.active_greeting.get("responded"):
             return False
-        agent = self.active_greeting.get("agent")
-        if not agent:
-            return False
-        if agent.rect.colliderect(self.player.rect.inflate(60, 60)):
-            self.active_greeting["responded"] = True
-            agent.clear_interaction_request()
-            self.player.resolve_greeting(agent.name, True)
-            self.player.adjust_relationship(agent.name, 8)
-            if self.pending_social_task_key and self.active_greeting.get("task_key") == self.pending_social_task_key:
-                self._complete_auto_task(self.pending_social_task_key, True)
-                self.pending_social_task_key = None
-            self._set_message(f"Saludaste a {agent.name}", 1.8)
-            self._add_activity_marker(f"Saludo a {agent.name}", pos=agent.rect.center, color=(200, 220, 255))
+        result = self._resolve_greeting_choice(True, manual=True)
+        if result:
+            self._log_action(result)
             return True
         return False
 
@@ -811,9 +1107,27 @@ class PlayScene(Scene):
             return
         greeter = random.choice(candidates)
         greeter.request_interaction(lambda: self.player.rect.center, duration=6.0)
-        self.active_greeting = {"agent": greeter, "timer": 6.0, "responded": False, "task_key": task_key}
+        prompt_id = self._push_action_prompt(
+            text=f"{greeter.name} te saluda",
+            options=[
+                {"key": pygame.K_y, "display": "Y", "label": "Saludar", "callback": lambda: self._resolve_greeting_choice(True, manual=True)},
+                {"key": pygame.K_n, "display": "N", "label": "Ignorar", "callback": lambda: self._resolve_greeting_choice(False, manual=True)},
+            ],
+            duration=6.0,
+            tag="greeting",
+            on_timeout=self._resolve_greeting_timeout,
+        )
+        self.active_greeting = {
+            "agent": greeter,
+            "timer": 6.0,
+            "responded": False,
+            "task_key": task_key,
+            "prompt_id": prompt_id,
+            "pending_accept": False,
+        }
         self.player.begin_greeting(greeter.name)
         self.player.note_interaction(f"{greeter.name} te saludó")
+        self._log_action(f"{greeter.name} te saluda")
         self._set_message(f"{greeter.name} se acerca a saludarte", 2.5)
         self.greeting_timer = random.uniform(10.0, 18.0)
 
@@ -841,6 +1155,7 @@ class PlayScene(Scene):
                 self.player.adjust_relationship("Equipo", 5)
                 self.player.note_interaction(f"Tarea {task['name']} completada")
                 self._add_activity_marker(f"✔ {task['name']}")
+                self._log_action((f"Completada: {task['name']}", (140, 220, 160)))
             else:
                 task["status"] = "Fallida"
                 task["started"] = True
@@ -850,6 +1165,10 @@ class PlayScene(Scene):
                 self.player.push_alert(f"Fallaste {task['name']}")
                 self.player.note_interaction(f"Perdiste la tarea {task['name']}")
                 self._add_activity_marker(f"✖ {task['name']}", color=(255, 120, 120))
+                self._log_action((f"Fallida: {task['name']}", (240, 150, 150)))
+            prompt_id = task.pop("prompt_id", None)
+            if prompt_id:
+                self._remove_prompt_by_id(prompt_id)
             return
 
     def _check_player_survival(self) -> None:
@@ -867,7 +1186,8 @@ class PlayScene(Scene):
         padding = 12
         bg = pygame.Surface((msg_surf.get_width() + padding * 2, msg_surf.get_height() + padding), pygame.SRCALPHA)
         bg.fill((10, 12, 20, 200))
-        y = surface.get_height() - bg.get_height() - 20
+        area_top = self.action_feed_rect.top if hasattr(self, "action_feed_rect") else surface.get_height()
+        y = area_top - bg.get_height() - 16
         x = self.panel_width + 20
         surface.blit(bg, (x, y))
         surface.blit(msg_surf, (x + padding, y + (padding // 2)))
