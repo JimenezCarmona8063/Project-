@@ -1,5 +1,5 @@
 # main.py — versión ordenada para evitar "MenuScene undefined"
-import os, sys, json
+import os, sys, json, random
 from typing import Optional
 
 import pygame
@@ -9,7 +9,7 @@ from settings import (
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
-    WINE, WINE_HOV, RED
+    WINE, WINE_HOV, RED, HUD_PANEL_WIDTH
 )
 
 from core.engine import Camera2D, Scene, draw_text
@@ -57,9 +57,12 @@ class PlayScene(Scene):
         # 1) Cargar TMX
         self.map = TmxMap()  # usa settings.TMX_MAP_FILE
 
-        # 2) Cámara al tamaño del mapa
-        # world_w, world_h vienen de tu mapa TMX
-        self.camera = Camera2D(*self.map.world_size(), *self.game.screen.get_size())
+        # 2) Cámara al tamaño del mapa sin el panel lateral
+        view_w = max(320, self.game.screen.get_width() - HUD_PANEL_WIDTH)
+        view_h = self.game.screen.get_height()
+        self.camera = Camera2D(*self.map.world_size(), view_w, view_h)
+        self.panel_width = HUD_PANEL_WIDTH
+        self.map_view = pygame.Rect(self.panel_width, 0, view_w, view_h)
 
 
         # 3) Player en el spawn del TMX
@@ -135,8 +138,22 @@ class PlayScene(Scene):
         self.decision_prompt: Optional[DecisionPrompt] = None
         self.decision_option_map: dict[str, str] = {}
         self.player_tasks: list[dict[str, object]] = []
+        self.random_task_timer = random.uniform(16.0, 28.0)
+        self.greeting_timer = random.uniform(8.0, 16.0)
+        self.active_greeting: Optional[dict[str, object]] = None
+        self.food_prompt_active = False
+        self.food_prompt_timer = 0.0
+        self.food_prompt_cooldown = 6.0
+        self.pending_food_task_key: Optional[str] = None
+        self.pending_social_task_key: Optional[str] = None
+        self.player_dead = False
 
     def handle_event(self, event):
+        if self.player_dead:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.game.play_scene = None
+                self.game.change_scene(MenuScene(self.game))
+            return
         if self.decision_prompt:
             self.decision_prompt.handle_event(event)
             if self.decision_prompt.finished:
@@ -151,6 +168,15 @@ class PlayScene(Scene):
 
     def update(self, dt):
         keys = keydict()
+        if self.player_dead:
+            if self.message_timer > 0:
+                self.message_timer -= dt
+                if self.message_timer <= 0:
+                    self.message_text = ""
+            return
+
+        if self.food_prompt_cooldown > 0:
+            self.food_prompt_cooldown = max(0.0, self.food_prompt_cooldown - dt)
         if not self.dialogue and not self.decision_prompt:
             self.player.handle_input(keys)
         else:
@@ -159,6 +185,7 @@ class PlayScene(Scene):
         self.player.update(dt, self.map)
         player_room = self.map.room_for_rect(self.player.rect)
         self.player.current_room = player_room.get("name") if player_room else None
+        self._maybe_activate_food_prompt(dt)
 
         for n in self.npcs:
             n.update(dt, self.map)
@@ -177,6 +204,8 @@ class PlayScene(Scene):
 
         self.decision_status = self.planner.get_status_snapshot()
         self._update_player_tasks()
+        self._update_random_events(dt)
+        self._check_player_survival()
 
         if self.message_timer > 0:
             self.message_timer -= dt
@@ -185,12 +214,16 @@ class PlayScene(Scene):
 
         if keys["interact"] and not self.interact_hold and not self.dialogue and not self.decision_prompt:
             self.interact_hold = True
-            if self._try_enter_room():
-                self.player.interact_cooldown = 0.6
+            handled = False
+            if self.food_prompt_active and self._consume_food_prompt():
+                handled = True
+            elif self._handle_greeting_response():
+                handled = True
+            elif self._try_enter_room():
+                handled = True
             elif self._try_support_specialist():
-                self.player.interact_cooldown = 0.6
+                handled = True
             else:
-                interacted = False
                 for n in self.npcs:
                     if self.player.rect.colliderect(n.rect.inflate(30,30)):
                         lines = self.scripts.get(n.script_id, ["..."])
@@ -203,10 +236,17 @@ class PlayScene(Scene):
                         else:
                             self.player.adjust_relationship(n.name, 6)
                             self.player.note_interaction(f"Conversaste con {n.name}")
-                        interacted = True
+                            if self.active_greeting and self.active_greeting.get("agent") is n:
+                                self.active_greeting["responded"] = True
+                                self.player.resolve_greeting(n.name, True)
+                                n.clear_interaction_request()
+                        handled = True
                         break
-                if not interacted and not self.dialogue:
+                if not handled and not self.dialogue:
                     self._open_decision_prompt()
+                    handled = True
+            if handled:
+                self.player.interact_cooldown = 0.6
         if not keys["interact"]:
             self.interact_hold = False
 
@@ -218,19 +258,32 @@ class PlayScene(Scene):
                 self._set_message(f"{near.name}: {near.status_text()}", 0.5)
 
     def draw(self, surface):
-        surface.fill((15,15,20))
-        self.map.draw(surface, self.camera)
-        for it in self.items: it.draw(surface, self.camera)
-        for n in self.npcs: n.draw(surface, self.camera)
-        for agent in self.specialists: agent.draw(surface, self.camera)
-        for e in self.enemies: e.draw(surface, self.camera)
-        self.player.draw(surface, self.camera)
+        surface.fill((12, 14, 22))
+        map_width = max(1, surface.get_width() - self.panel_width)
+        if self.map_view.width != map_width or self.map_view.height != surface.get_height():
+            self.map_view.size = (map_width, surface.get_height())
+            self.camera.screen_w = map_width
+            self.camera.screen_h = surface.get_height()
+        map_surface = surface.subsurface(self.map_view)
+        map_surface.fill((18, 20, 28))
+        self.map.draw(map_surface, self.camera)
+        for it in self.items:
+            it.draw(map_surface, self.camera)
+        for n in self.npcs:
+            n.draw(map_surface, self.camera)
+        for agent in self.specialists:
+            agent.draw(map_surface, self.camera)
+        for e in self.enemies:
+            e.draw(map_surface, self.camera)
+        self.player.draw(map_surface, self.camera)
         draw_hud(surface, self.player, self.decision_status, self.player_tasks)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
         if self.message_text:
             self._draw_message(surface)
         if self.dialogue: self.dialogue.draw(surface)
+        if self.player_dead:
+            self._draw_game_over(surface)
 
     def _nearest_specialist(self):
         best = None
@@ -342,6 +395,20 @@ class PlayScene(Scene):
             if task.get("done"):
                 continue
             name = task["name"]
+            if task.get("auto") and task.get("planner_category"):
+                if name in active_info:
+                    char_name, progress, _ = active_info[name]
+                    task["status"] = f"{char_name}: {int(progress * 100)}%"
+                    task["started"] = True
+                    continue
+                if any(f"inició {name}" in h for h in history):
+                    task["status"] = "Asignada"
+                    task["started"] = True
+                    continue
+                if any(f"completó {name}" in h for h in history):
+                    self._complete_auto_task(task.get("auto_key") or name, True)
+                    continue
+                continue
             if name in active_info:
                 char_name, progress, _ = active_info[name]
                 task["status"] = f"{char_name}: {int(progress * 100)}%"
@@ -357,14 +424,269 @@ class PlayScene(Scene):
                 self.player.adjust_relationship("Equipo", 5)
                 self.player.note_interaction(f"{name} completada")
 
+    def _update_random_events(self, dt: float):
+        active_names = set()
+        if self.decision_status:
+            for _, action_name, _, _, _ in self.decision_status.get("active", []):
+                active_names.add(action_name)
+        self.random_task_timer -= dt
+        if self.random_task_timer <= 0:
+            self._spawn_random_task()
+            self.random_task_timer = random.uniform(18.0, 32.0)
+
+        if self.greeting_timer > 0:
+            self.greeting_timer -= dt
+        if self.greeting_timer <= 0:
+            self._trigger_random_greeting()
+            self.greeting_timer = random.uniform(14.0, 24.0)
+
+        if self.active_greeting:
+            self.active_greeting["timer"] -= dt
+            agent = self.active_greeting.get("agent")
+            if self.active_greeting["timer"] <= 0 or not agent:
+                if agent and not self.active_greeting.get("responded"):
+                    self.player.resolve_greeting(agent.name, False)
+                    self.player.adjust_relationship(agent.name, -6)
+                    if self.pending_social_task_key and self.active_greeting.get("task_key") == self.pending_social_task_key:
+                        self._complete_auto_task(self.pending_social_task_key, False)
+                        self.pending_social_task_key = None
+                if agent:
+                    agent.clear_interaction_request()
+                self.active_greeting = None
+
+        if self.food_prompt_active:
+            self.food_prompt_timer -= dt
+            if self.food_prompt_timer <= 0:
+                self.food_prompt_active = False
+                self.food_prompt_cooldown = 10.0
+                if self.pending_food_task_key:
+                    self._complete_auto_task(self.pending_food_task_key, False)
+                    self.pending_food_task_key = None
+
+        expired: list[dict[str, object]] = []
+        for task in self.player_tasks:
+            if not task.get("auto") or task.get("done"):
+                continue
+            if task.get("timer") is None:
+                continue
+            if task.get("planner_category") and task.get("name") in active_names:
+                continue
+            task["timer"] = float(task.get("timer", 0.0)) - dt
+            if task["timer"] <= 0:
+                expired.append(task)
+        for task in expired:
+            key = task.get("auto_key") or task.get("name")
+            self._complete_auto_task(key, False)
+
+    def _spawn_random_task(self):
+        templates = [
+            {
+                "name": "Recolecta urgente",
+                "planner_category": "Coordinar recolección",
+                "penalty": 12,
+                "reward": {"grades": 4},
+            },
+            {
+                "name": "Fortificar salones",
+                "planner_category": "Impulsar construcción",
+                "penalty": 10,
+                "reward": {"grades": 5},
+            },
+            {
+                "name": "Simulacro de refugio",
+                "planner_category": "Organizar defensa",
+                "penalty": 9,
+                "reward": {"social": 4},
+            },
+            {
+                "name": "Comer algo rápido",
+                "type": "food",
+                "penalty": 10,
+                "reward": {"hunger": 40},
+            },
+            {
+                "name": "Charla con aliados",
+                "type": "social",
+                "penalty": 11,
+                "reward": {"social": 10},
+            },
+        ]
+        template = random.choice(templates)
+        entry: dict[str, object] = {
+            "name": template["name"],
+            "status": "Pendiente",
+            "done": False,
+            "started": False,
+            "auto": True,
+            "timer": random.uniform(30.0, 50.0),
+            "penalty": template.get("penalty", 8),
+            "reward": template.get("reward", {}),
+            "auto_key": template.get("name"),
+        }
+        if template.get("planner_category"):
+            action = self.planner.plan_player_choice(template["planner_category"], focus_room=self.player.current_room, helper=self.player)
+            if action:
+                entry["name"] = action.name
+                entry["auto_key"] = action.name
+                entry["planner_category"] = template["planner_category"]
+                entry["status"] = "Planificada"
+            else:
+                entry["status"] = "Esperando recursos"
+                entry["timer"] = random.uniform(20.0, 35.0)
+        self.player_tasks.append(entry)
+        self.player.push_alert(f"Nueva tarea: {entry['name']}")
+        self.player.note_interaction(f"Nueva tarea: {entry['name']}")
+        if template.get("type") == "food":
+            self.pending_food_task_key = entry["auto_key"]
+            self._activate_food_prompt(force=True)
+        elif template.get("type") == "social":
+            self.pending_social_task_key = entry["auto_key"]
+            self._trigger_random_greeting(force=True, task_key=entry["auto_key"])
+
+    def _activate_food_prompt(self, force: bool = False) -> None:
+        if self.food_prompt_active:
+            return
+        if not force:
+            if self.player.hunger > 40:
+                return
+            if self.food_prompt_cooldown > 0:
+                return
+        self.food_prompt_active = True
+        self.food_prompt_timer = 12.0
+        self.food_prompt_cooldown = 6.0
+        self.player.push_alert("Presiona E para comer ahora")
+        self._set_message("Tienes hambre. Pulsa E para comer.", 2.8)
+
+    def _maybe_activate_food_prompt(self, dt: float) -> None:
+        if self.food_prompt_active:
+            return
+        if self.player.hunger <= 32 and self.food_prompt_cooldown <= 0:
+            self._activate_food_prompt()
+
+    def _consume_food_prompt(self) -> bool:
+        if not self.food_prompt_active:
+            return False
+        self.food_prompt_active = False
+        self.food_prompt_timer = 0.0
+        self.food_prompt_cooldown = 20.0
+        self.player.restore_hunger(45.0)
+        self.player.adjust_grades(+2.0)
+        self.player.note_interaction("Tomaste un snack energético")
+        self._set_message("Comiste algo rápido", 1.6)
+        if self.pending_food_task_key:
+            self._complete_auto_task(self.pending_food_task_key, True)
+            self.pending_food_task_key = None
+        return True
+
+    def _handle_greeting_response(self) -> bool:
+        if not self.active_greeting or self.active_greeting.get("responded"):
+            return False
+        agent = self.active_greeting.get("agent")
+        if not agent:
+            return False
+        if agent.rect.colliderect(self.player.rect.inflate(60, 60)):
+            self.active_greeting["responded"] = True
+            agent.clear_interaction_request()
+            self.player.resolve_greeting(agent.name, True)
+            self.player.adjust_relationship(agent.name, 8)
+            if self.pending_social_task_key and self.active_greeting.get("task_key") == self.pending_social_task_key:
+                self._complete_auto_task(self.pending_social_task_key, True)
+                self.pending_social_task_key = None
+            self._set_message(f"Saludaste a {agent.name}", 1.8)
+            return True
+        return False
+
+    def _trigger_random_greeting(self, force: bool = False, task_key: Optional[str] = None) -> None:
+        if self.active_greeting:
+            return
+        candidates = []
+        for npc in self.npcs:
+            if not force:
+                if abs(npc.rect.centerx - self.player.rect.centerx) > 360:
+                    continue
+                if abs(npc.rect.centery - self.player.rect.centery) > 260:
+                    continue
+            candidates.append(npc)
+        for agent in self.specialists:
+            if not getattr(agent, "visible", True):
+                continue
+            if agent.current_action is not None and not force:
+                continue
+            if force or pygame.Vector2(agent.rect.center).distance_to(self.player.rect.center) < 420:
+                candidates.append(agent)
+        if not candidates:
+            return
+        greeter = random.choice(candidates)
+        greeter.request_interaction(lambda: self.player.rect.center, duration=6.0)
+        self.active_greeting = {"agent": greeter, "timer": 6.0, "responded": False, "task_key": task_key}
+        self.player.begin_greeting(greeter.name)
+        self.player.note_interaction(f"{greeter.name} te saludó")
+        self._set_message(f"{greeter.name} se acerca a saludarte", 2.5)
+        self.greeting_timer = random.uniform(16.0, 26.0)
+
+    def _complete_auto_task(self, key: Optional[str], success: bool) -> None:
+        if not key:
+            return
+        for task in self.player_tasks:
+            if task.get("done"):
+                continue
+            matches = task.get("auto_key") == key or task.get("name") == key
+            if not matches:
+                continue
+            task["done"] = True
+            reward = task.get("reward", {})
+            penalty = float(task.get("penalty", 8))
+            if success:
+                task["status"] = "Completada"
+                task["started"] = True
+                if "grades" in reward:
+                    self.player.adjust_grades(float(reward["grades"]))
+                if "social" in reward:
+                    self.player.adjust_social(float(reward["social"]))
+                if "hunger" in reward:
+                    self.player.restore_hunger(float(reward["hunger"]))
+                self.player.adjust_relationship("Equipo", 5)
+                self.player.note_interaction(f"Tarea {task['name']} completada")
+            else:
+                task["status"] = "Fallida"
+                task["started"] = True
+                self.player.adjust_grades(-penalty)
+                self.player.adjust_social(-penalty * 0.4)
+                self.player.hp = max(0.0, self.player.hp - penalty * 0.3)
+                self.player.push_alert(f"Fallaste {task['name']}")
+                self.player.note_interaction(f"Perdiste la tarea {task['name']}")
+            return
+
+    def _check_player_survival(self) -> None:
+        if self.player_dead:
+            return
+        if getattr(self.player, "hp", 0) <= 0:
+            self.player_dead = True
+            self.dialogue = None
+            self.decision_prompt = None
+            self._set_message("Te desplomaste por agotamiento", 4.5)
+            self.player.note_interaction("La jornada terminó por agotamiento")
+            self.planner.history.prepend("El jugador colapsó por fatiga")
     def _draw_message(self, surface):
         msg_surf = self.font_overlay_small.render(self.message_text, True, (255, 255, 255))
         padding = 12
         bg = pygame.Surface((msg_surf.get_width() + padding * 2, msg_surf.get_height() + padding), pygame.SRCALPHA)
         bg.fill((10, 12, 20, 200))
         y = surface.get_height() - bg.get_height() - 20
-        surface.blit(bg, (20, y))
-        surface.blit(msg_surf, (20 + padding, y + (padding // 2)))
+        x = self.panel_width + 20
+        surface.blit(bg, (x, y))
+        surface.blit(msg_surf, (x + padding, y + (padding // 2)))
+
+    def _draw_game_over(self, surface):
+        width = surface.get_width() - self.panel_width
+        overlay = pygame.Surface((width, surface.get_height()), pygame.SRCALPHA)
+        overlay.fill((12, 8, 8, 180))
+        surface.blit(overlay, (self.panel_width, 0))
+        title = self.font_overlay.render("Juego terminado", True, (240, 80, 80))
+        subtitle = self.font_overlay_small.render("Presiona ESC para volver al menú", True, (245, 245, 245))
+        center_x = self.panel_width + width // 2
+        surface.blit(title, title.get_rect(center=(center_x, surface.get_height() // 2 - 24)))
+        surface.blit(subtitle, subtitle.get_rect(center=(center_x, surface.get_height() // 2 + 12)))
 
 class MenuScene(Scene):
     def __init__(self, game):
@@ -374,6 +696,8 @@ class MenuScene(Scene):
             img = pygame.image.load(TITLE_IMAGE).convert()
             self.bg = img
             iw, ih = img.get_width(), img.get_height()
+            iw = max(iw, WIDTH)
+            ih = max(ih, HEIGHT)
             if (game.screen.get_width(), game.screen.get_height()) != (iw, ih):
                 game.screen = pygame.display.set_mode((iw, ih))
         except Exception:
@@ -506,7 +830,9 @@ class Game:
         win_size = (WIDTH, HEIGHT)
         try:
             tmp = pygame.image.load(TITLE_IMAGE)
-            win_size = (tmp.get_width(), tmp.get_height())
+            win_w = max(tmp.get_width(), WIDTH)
+            win_h = max(tmp.get_height(), HEIGHT)
+            win_size = (win_w, win_h)
         except Exception:
             pass
 

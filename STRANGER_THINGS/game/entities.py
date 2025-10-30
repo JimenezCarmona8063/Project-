@@ -1,7 +1,7 @@
 # game/entities.py
 import random
 from collections import deque
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional, Tuple
 
 import pygame
 
@@ -99,6 +99,9 @@ class Character(Entity):
         self.action_feedback = ""
         self.current_room: Optional[str] = None
         self.availability = 1.0
+        self.approach_target: Optional[pygame.Vector2] = None
+        self.approach_timer: float = 0.0
+        self._approach_target_source: Optional[Callable[[], Tuple[float, float]]] = None
 
     @classmethod
     def _name_font(cls):
@@ -139,6 +142,53 @@ class Character(Entity):
         self.feedback_timer = 2.0
         self.hp = min(self.max_hp, self.hp + 1.5)
 
+    def request_interaction(self, target, duration: float = 3.5) -> None:
+        if callable(target):
+            self._approach_target_source = target
+            try:
+                pos = target()
+            except Exception:
+                pos = None
+        else:
+            self._approach_target_source = None
+            pos = target
+        if pos is None:
+            return
+        self.approach_target = pygame.Vector2(pos)
+        self.approach_timer = max(duration, 0.2)
+
+    def clear_interaction_request(self) -> None:
+        self.approach_timer = 0.0
+        self.approach_target = None
+        self._approach_target_source = None
+
+    def _approach_step(self, dt: float, tilemap) -> Tuple[bool, bool]:
+        if self.approach_timer <= 0.0 or self.virtual_only:
+            self.approach_target = None
+            self._approach_target_source = None
+            return False, False
+        self.approach_timer = max(0.0, self.approach_timer - dt)
+        if self._approach_target_source:
+            try:
+                pos = self._approach_target_source()
+            except Exception:
+                pos = None
+            if pos is not None:
+                self.approach_target = pygame.Vector2(pos)
+        if not self.approach_target:
+            return True, False
+        center = pygame.Vector2(self.rect.center)
+        delta = self.approach_target - center
+        if delta.length_squared() <= 16:
+            return True, False
+        vel = delta.normalize() * max(60.0, self.speed * 0.55)
+        self.rect = move_with_collision(self.rect, vel, tilemap, dt)
+        if abs(vel.x) > abs(vel.y):
+            self.set_dir("right" if vel.x > 0 else "left")
+        elif abs(vel.y) > 0:
+            self.set_dir("down" if vel.y > 0 else "up")
+        return True, True
+
     def _tick_feedback(self, dt: float):
         if self.feedback_timer > 0:
             self.feedback_timer = max(0.0, self.feedback_timer - dt)
@@ -154,8 +204,9 @@ class Character(Entity):
             self._tick_feedback(dt)
             return
 
-        moving = False
-        if not self.virtual_only and self.action_target:
+        engaged, moved = self._approach_step(dt, tilemap)
+        moving = moved
+        if not engaged and not self.virtual_only and self.action_target:
             center = pygame.Vector2(self.rect.center)
             delta = self.action_target - center
             if delta.length_squared() > 9:
@@ -163,11 +214,12 @@ class Character(Entity):
                 self.rect = move_with_collision(self.rect, vel, tilemap, dt)
                 moving = True
         self.tick_anim(dt, moving)
-        self.action_timer += dt
+        self.action_timer += dt * (0.5 if engaged and not moved else 1.0)
         self._tick_feedback(dt)
 
     def idle_step(self, dt: float, tilemap):
-        self.tick_anim(dt, False)
+        engaged, moved = self._approach_step(dt, tilemap)
+        self.tick_anim(dt, moved)
         self._tick_feedback(dt)
 
     def status_text(self) -> str:
@@ -223,6 +275,13 @@ class Player(Character):
         self.relationships: dict[str, float] = {}
         self.interaction_log: deque[str] = deque(maxlen=6)
         self.mood = "Neutral"
+        self.grades = 100.0
+        self.social_health = 100.0
+        self.hunger = 100.0
+        self.alerts: deque[str] = deque(maxlen=6)
+        self._last_alert: Optional[str] = None
+        self.pending_greeting: Optional[str] = None
+        self.idle_time = 0.0
 
     def handle_input(self, keys):
         self.vx = (keys.get("right", False) - keys.get("left", False)) * self.speed
@@ -244,6 +303,11 @@ class Player(Character):
         vel = pygame.Vector2(self.vx, self.vy)
         self.rect = move_with_collision(self.rect, vel, tilemap, dt)
         self.tick_anim(dt, vel.length_squared() > 0.1)
+        if vel.length_squared() > 1.0:
+            self.idle_time = 0.0
+        else:
+            self.idle_time += dt
+        self._update_needs(dt)
 
     def adjust_relationship(self, name: str, delta: float) -> None:
         base = self.relationships.get(name, 50.0)
@@ -255,6 +319,14 @@ class Player(Character):
         if not text:
             return
         self.interaction_log.appendleft(text)
+
+    def push_alert(self, text: str) -> None:
+        if not text:
+            return
+        if text == self._last_alert:
+            return
+        self._last_alert = text
+        self.alerts.appendleft(text)
 
     def top_relationships(self, count: int = 3):
         items = sorted(self.relationships.items(), key=lambda kv: kv[1], reverse=True)
@@ -273,6 +345,59 @@ class Player(Character):
             self.mood = "Neutral"
         else:
             self.mood = "Tenso"
+
+    def adjust_grades(self, delta: float) -> None:
+        self.grades = max(0.0, min(100.0, self.grades + delta))
+        if delta < 0:
+            self.push_alert("Tus calificaciones bajaron")
+        elif delta > 0:
+            self.note_interaction("Recuperaste calificaciones")
+        if self.grades <= 0:
+            self.hp = max(0.0, self.hp - 8.0)
+
+    def adjust_social(self, delta: float) -> None:
+        self.social_health = max(0.0, min(100.0, self.social_health + delta))
+        if delta < 0:
+            self.push_alert("Tu vida social se resiente")
+        elif delta > 0:
+            self.note_interaction("Tu vida social mejora")
+        if self.social_health <= 0:
+            self.hp = max(0.0, self.hp - 6.0)
+        self._update_mood()
+
+    def restore_hunger(self, amount: float) -> None:
+        self.hunger = max(0.0, min(100.0, self.hunger + amount))
+        if amount > 0:
+            self.note_interaction("Te alimentaste")
+
+    def _update_needs(self, dt: float) -> None:
+        decay = dt * 1.6
+        self.hunger = max(0.0, self.hunger - decay)
+        if self.hunger <= 35:
+            self.push_alert("Necesitas comer algo")
+        if self.hunger <= 0:
+            self.hp = max(0.0, self.hp - dt * 10.0)
+        if self.idle_time > 12.0:
+            self.hp = max(0.0, self.hp - dt * 8.0)
+            self.push_alert("Si no haces nada perderás energía")
+        if self.hp <= 0:
+            self.push_alert("Colapsaste por agotamiento")
+
+    def begin_greeting(self, name: str) -> None:
+        self.pending_greeting = name
+        self.push_alert(f"{name} te está saludando")
+
+    def resolve_greeting(self, name: str, responded: bool) -> None:
+        if self.pending_greeting != name:
+            return
+        if responded:
+            self.adjust_social(+9)
+            self.note_interaction(f"Saludaste a {name}")
+        else:
+            self.adjust_social(-12)
+            self.hp = max(0.0, self.hp - 5.0)
+            self.note_interaction(f"Ignoraste a {name}")
+        self.pending_greeting = None
 
 
 class NPC(Character):

@@ -1,6 +1,6 @@
 # game/ui.py — botones, sliders y HUD
 import pygame
-from settings import WHITE, RED, GREEN
+from settings import WHITE, RED, GREEN, BLUE, ORANGE, PURPLE, HUD_PANEL_WIDTH
 
 class Button:
     def __init__(self, rect, text, font, on_click, bg=(40,40,40), bg_hover=(60,60,60), fg=(255,255,255), hover_sound=None):
@@ -73,36 +73,43 @@ class Slider:
         knob_x = int(self.rect.x + self.value * self.rect.w)
         pygame.draw.circle(surface, (220,220,220), (knob_x, self.rect.centery), max(6, self.rect.h//3))
 
+def _draw_bar(panel, label_font, value_font, y, label, value, max_value, bar_color):
+    label_surf = label_font.render(label, True, WHITE)
+    panel.blit(label_surf, (18, y))
+    y += label_surf.get_height() + 4
+    bar_rect = pygame.Rect(18, y, HUD_PANEL_WIDTH - 36, 22)
+    pygame.draw.rect(panel, (20, 24, 34), bar_rect, border_radius=10)
+    inner = bar_rect.inflate(-4, -4)
+    ratio = 0.0
+    if max_value:
+        ratio = max(0.0, min(1.0, float(value) / float(max_value)))
+    fill = inner.copy()
+    fill.width = int(inner.width * ratio)
+    pygame.draw.rect(panel, bar_color, fill, border_radius=8)
+    pygame.draw.rect(panel, (12, 16, 24), inner, width=2, border_radius=8)
+    text = value_font.render(f"{int(value)}/{int(max_value)}", True, WHITE)
+    panel.blit(text, (inner.x + 6, inner.y + 2))
+    return y + bar_rect.height + 10
+
+
 def draw_hud(surface, player, planner_status=None, task_log=None):
     font = pygame.font.SysFont("arial", 20, bold=True)
     small = pygame.font.SysFont("arial", 16)
     tiny = pygame.font.SysFont("arial", 14)
 
-    panel_w = 300
-    panel = pygame.Surface((panel_w, surface.get_height()), pygame.SRCALPHA)
-    panel.fill((12, 18, 28, 235))
+    panel_w = HUD_PANEL_WIDTH
+    panel = pygame.Surface((panel_w, surface.get_height()))
+    panel.fill((14, 20, 32))
 
     y = 18
     title = font.render("Panel de Misión", True, WHITE)
     panel.blit(title, (18, y))
     y += title.get_height() + 10
 
-    hp_label = small.render("Salud", True, WHITE)
-    panel.blit(hp_label, (18, y))
-    y += hp_label.get_height() + 4
-    bar_rect = pygame.Rect(18, y, panel_w - 36, 22)
-    pygame.draw.rect(panel, (35, 30, 30), bar_rect, border_radius=10)
-    inner = bar_rect.inflate(-4, -4)
-    ratio = 1.0
-    if getattr(player, "max_hp", 0):
-        ratio = max(0.0, min(1.0, float(getattr(player, "hp", 0)) / float(player.max_hp)))
-    pygame.draw.rect(panel, RED, inner, border_radius=8)
-    fill = inner.copy()
-    fill.width = int(inner.width * ratio)
-    pygame.draw.rect(panel, GREEN, fill, border_radius=8)
-    hp_text = tiny.render(f"{int(getattr(player, 'hp', 0))}/{int(getattr(player, 'max_hp', 0))}", True, WHITE)
-    panel.blit(hp_text, (inner.x + 6, inner.y + 2))
-    y += bar_rect.height + 12
+    y = _draw_bar(panel, small, tiny, y, "Salud", getattr(player, "hp", 0), getattr(player, "max_hp", 0), GREEN)
+    y = _draw_bar(panel, small, tiny, y, "Calificaciones", getattr(player, "grades", 0), 100, BLUE)
+    y = _draw_bar(panel, small, tiny, y, "Vida social", getattr(player, "social_health", 0), 100, PURPLE)
+    y = _draw_bar(panel, small, tiny, y, "Hambre", getattr(player, "hunger", 0), 100, ORANGE)
 
     social_state = getattr(player, "mood", "Neutral")
     room = getattr(player, "current_room", None)
@@ -114,6 +121,14 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
         text = small.render(line, True, WHITE)
         panel.blit(text, (18, y))
         y += text.get_height() + 4
+
+    alerts = list(getattr(player, "alerts", []))
+    if alerts:
+        y += 6
+        for alert in alerts[:3]:
+            alert_text = tiny.render(f"⚠ {alert}", True, RED)
+            panel.blit(alert_text, (18, y))
+            y += alert_text.get_height() + 2
 
     relationships_fn = getattr(player, "top_relationships", None)
     rels = relationships_fn() if callable(relationships_fn) else []
