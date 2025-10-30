@@ -16,7 +16,14 @@ from settings import (
 )
 
 from core.engine import Camera2D, Scene, draw_text
-from game.ui import draw_hud, draw_action_feed, Button, Slider, DecisionPrompt
+from game.ui import (
+    draw_hud,
+    draw_action_feed,
+    Button,
+    Slider,
+    DecisionPrompt,
+    ChatWindow,
+)
 
 from game.entities import (
     Player,
@@ -231,8 +238,8 @@ class PlayScene(Scene):
         if self.font_overlay_small is None:
             self.font_overlay_small = pygame.font.SysFont("arial", 16)
         self.decision_prompt: Optional[DecisionPrompt] = None
-        self.message_prompt: Optional[DecisionPrompt] = None
-        self.message_prompt_target: Optional[dict[str, object]] = None
+        self.chat_window: Optional[ChatWindow] = None
+        self.chat_window_target: Optional[dict[str, object]] = None
         self.decision_option_map: dict[str, str] = {}
         self.player_tasks: list[dict[str, object]] = []
         self.random_task_timer = random.uniform(12.0, 22.0)
@@ -537,17 +544,35 @@ class PlayScene(Scene):
             event.type == pygame.KEYDOWN
             and not self.dialogue
             and not self.decision_prompt
-            and not self.message_prompt
+            and not self.chat_window
         ):
             if self._handle_prompt_key(event.key):
                 return
-        if self.message_prompt:
-            self.message_prompt.handle_event(event)
-            if self.message_prompt.finished:
-                selection = self.message_prompt.selection
-                self.message_prompt = None
-                self._resolve_message_choice(selection)
-            return
+        if self.chat_window:
+            result = self.chat_window.handle_event(event)
+            if result == "__cancel__":
+                self.player.note_interaction("Cancelaste el mensaje")
+                self._set_message("Mensaje cancelado", 1.0)
+                self.chat_window_target = None
+                self.chat_window = None
+                return
+            if result == "__closed__":
+                self.chat_window_target = None
+                self.chat_window = None
+                return
+            if isinstance(result, str):
+                outcome = self._resolve_message_choice(result)
+                if self.chat_window and outcome:
+                    for entry in outcome.get("history", []):
+                        self.chat_window.add_message(
+                            entry.get("author", ""),
+                            entry.get("text", ""),
+                            entry.get("outbound", False),
+                        )
+                    self.chat_window.show_outcome(outcome.get("summary", []))
+                elif outcome is None:
+                    self.chat_window = None
+                return
         if self.decision_prompt:
             self.decision_prompt.handle_event(event)
             if self.decision_prompt.finished:
@@ -584,7 +609,7 @@ class PlayScene(Scene):
 
         if self.food_prompt_cooldown > 0:
             self.food_prompt_cooldown = max(0.0, self.food_prompt_cooldown - dt)
-        if not self.dialogue and not self.decision_prompt and not self.message_prompt:
+        if not self.dialogue and not self.decision_prompt and not self.chat_window:
             self.player.handle_input(keys)
         else:
             self.player.vx = 0.0
@@ -607,14 +632,14 @@ class PlayScene(Scene):
             self.rush_hold = False
 
         if keys.get("fight"):
-            if not self.fight_hold and not self.decision_prompt and not self.dialogue and not self.message_prompt:
+            if not self.fight_hold and not self.decision_prompt and not self.dialogue and not self.chat_window:
                 self._start_fight()
             self.fight_hold = True
         else:
             self.fight_hold = False
 
         if keys.get("message"):
-            if not self.message_hold and not self.dialogue and not self.decision_prompt and not self.message_prompt:
+            if not self.message_hold and not self.dialogue and not self.decision_prompt and not self.chat_window:
                 self._open_message_prompt()
             self.message_hold = True
         else:
@@ -648,7 +673,7 @@ class PlayScene(Scene):
             if self.message_timer <= 0:
                 self.message_text = ""
 
-        if keys["interact"] and not self.interact_hold and not self.dialogue and not self.decision_prompt:
+        if keys["interact"] and not self.interact_hold and not self.dialogue and not self.decision_prompt and not self.chat_window:
             self.interact_hold = True
             handled = False
             if self.food_prompt_active and self._consume_food_prompt():
@@ -720,8 +745,8 @@ class PlayScene(Scene):
         draw_action_feed(surface, self.action_feed_rect, self.action_prompts, list(self.action_history), controls_hint=self.controls_hint)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
-        if self.message_prompt:
-            self.message_prompt.draw(surface)
+        if self.chat_window:
+            self.chat_window.draw(surface)
         if self.message_text:
             self._draw_message(surface)
         if self.active_fight:
@@ -1359,7 +1384,7 @@ class PlayScene(Scene):
         if not target:
             self._set_message("No tienes a quién enviar mensaje ahora", 1.4)
             return
-        self.message_prompt_target = target
+        self.chat_window_target = target
         name = target["name"]
         question = f"¿Qué mensaje envías a {name}?"
         options = [
@@ -1368,19 +1393,34 @@ class PlayScene(Scene):
             "Pedir ayuda con tarea",
             "Invitar a comer después",
         ]
-        self.message_prompt = DecisionPrompt("Red social", question, options, self.font_overlay, self.font_overlay_small)
+        self.chat_window = ChatWindow(
+            "Red social",
+            name,
+            question,
+            options,
+            self.font_overlay,
+            self.font_overlay_small,
+        )
+        saludo = random.choice([
+            "¡Hola! Justo estaba pensando en ti.",
+            "Hey, ¿cómo va tu día?",
+            "¿Listo para las actividades de hoy?",
+            "¿Qué tal todo por el campus?",
+        ])
+        self.chat_window.add_message(name, saludo)
 
-    def _resolve_message_choice(self, selection: Optional[str]) -> None:
-        target = self.message_prompt_target
-        self.message_prompt_target = None
+    def _resolve_message_choice(self, selection: Optional[str]) -> Optional[dict[str, object]]:
+        target = self.chat_window_target
+        self.chat_window_target = None
         if not selection or not target:
             self._set_message("Mensaje cancelado", 1.0)
             self.player.note_interaction("Cancelaste el mensaje")
-            return
+            return None
         name = target["name"]
         entity = target.get("entity")
         response = ""
         out_text = ""
+        summary_lines: list[str] = []
         if selection == "Enviar mensaje motivador":
             out_text = "¡Tú puedes con los pendientes de hoy!"
             response = random.choice([
@@ -1390,6 +1430,7 @@ class PlayScene(Scene):
             self.player.adjust_social(+6)
             self.player.adjust_relationship(name, +5)
             self.player.note_interaction(f"Animaste a {name}")
+            summary_lines.append("Motivaste a tu contacto (+ánimo social)")
         elif selection == "Mandar chisme divertido":
             out_text = "¿Supiste lo que pasó en la cafetería?"
             if random.random() < 0.45:
@@ -1400,6 +1441,7 @@ class PlayScene(Scene):
                 self.player.adjust_social(-4)
                 self.player.adjust_relationship(name, -3)
                 self.player.take_damage(1.0)
+                summary_lines.append("El chisme salió mal (-relación, -ánimo)")
             else:
                 response = random.choice([
                     "Jajaja, cuéntame más",
@@ -1407,6 +1449,7 @@ class PlayScene(Scene):
                 ])
                 self.player.adjust_social(+4)
                 self.player.adjust_relationship(name, +2)
+                summary_lines.append("Compartiste una anécdota divertida (+vida social)")
         elif selection == "Pedir ayuda con tarea":
             out_text = "¿Me compartes tus apuntes para la tarea?"
             if random.random() < 0.3:
@@ -1417,6 +1460,7 @@ class PlayScene(Scene):
                 self.player.adjust_social(-2)
                 self.player.adjust_relationship(name, -2)
                 self.player.note_interaction(f"{name} no pudo ayudarte")
+                summary_lines.append("No recibiste apoyo esta vez (-relación)")
             else:
                 response = random.choice([
                     "Claro, te los mando en un rato",
@@ -1425,6 +1469,7 @@ class PlayScene(Scene):
                 self.player.adjust_social(+5)
                 self.player.adjust_relationship(name, +4)
                 self.player.adjust_grades(+3)
+                summary_lines.append("Conseguirás apuntes frescos (+calificaciones)")
         elif selection == "Invitar a comer después":
             out_text = "¿Vamos a comer algo después de clase?"
             if random.random() < 0.2:
@@ -1434,6 +1479,7 @@ class PlayScene(Scene):
                 ])
                 self.player.adjust_social(-2)
                 self.player.adjust_relationship(name, -2)
+                summary_lines.append("La invitación no se concretó (-relación)")
             else:
                 response = random.choice([
                     "¡Sí! Me hace falta un descanso",
@@ -1442,18 +1488,26 @@ class PlayScene(Scene):
                 self.player.adjust_social(+6)
                 self.player.adjust_relationship(name, +3)
                 self.player.restore_hunger(+10)
+                summary_lines.append("Planearon comer juntos (+hambre, +vida social)")
         else:
             self._set_message("Mensaje sin enviar", 1.0)
-            return
+            return None
 
         self.player.add_social_message(name, out_text, outbound=True)
+        conversation = [{"author": "Tú", "text": out_text, "outbound": True}]
         if response:
             self.player.add_social_message(name, response)
             self.player.push_alert(f"{name}: {response}")
+            conversation.append({"author": name, "text": response, "outbound": False})
+            summary_lines.insert(0, f"{name}: {response}")
+        else:
+            summary_lines.insert(0, f"{name} vio tu mensaje")
         if entity and hasattr(entity, "request_interaction"):
             entity.request_interaction(lambda: self.player.rect.center, duration=4.0)
         self._set_message(f"Mensaje enviado a {name}", 1.8)
         self._add_activity_marker(f"Mensaje a {name}")
+        summary_lines.append("Pulsa ENTER para cerrar el chat")
+        return {"history": conversation, "summary": summary_lines}
 
     def _choose_message_target(self) -> Optional[dict[str, object]]:
         player_center = pygame.Vector2(self.player.rect.center)

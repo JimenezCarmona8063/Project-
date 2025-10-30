@@ -316,31 +316,245 @@ class DecisionPrompt:
                 self.finished = True
 
     def draw(self, surface):
-        panel_w = int(surface.get_width() * 0.42)
-        panel_h = 260
+        panel_w = max(420, int(surface.get_width() * 0.38))
+        panel_h = 320
         panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill((16, 20, 32, 240))
-        pygame.draw.rect(panel, (70, 90, 140), panel.get_rect(), width=2, border_radius=16)
 
-        y = 24
+        body_rect = panel.get_rect()
+        pygame.draw.rect(panel, (18, 24, 38, 235), body_rect, border_radius=26)
+
+        header_rect = pygame.Rect(0, 0, panel_w, 84)
+        pygame.draw.rect(
+            panel,
+            (46, 68, 118, 255),
+            header_rect,
+            border_top_left_radius=26,
+            border_top_right_radius=26,
+        )
+        pygame.draw.line(panel, (86, 120, 180), (0, header_rect.bottom), (panel_w, header_rect.bottom), 2)
         title = self.font.render(self.title, True, WHITE)
-        panel.blit(title, (24, y))
-        y += title.get_height() + 6
-        question = self.small.render(self.question, True, WHITE)
-        panel.blit(question, (24, y))
-        y += question.get_height() + 14
+        panel.blit(title, (32, 18))
+        question = self.small.render(self.question, True, (220, 230, 240))
+        panel.blit(question, (32, 48))
 
+        list_top = header_rect.bottom + 16
+        option_width = panel_w - 64
         for idx, option in enumerate(self.options):
             selected = idx == self.index
-            color = (240, 220, 120) if selected else WHITE
-            marker = "▶ " if selected else "  "
-            text = self.small.render(marker + option, True, color)
-            panel.blit(text, (32, y))
-            y += text.get_height() + 8
+            option_rect = pygame.Rect(32, list_top + idx * 50, option_width, 46)
+            base_color = (32, 40, 58)
+            highlight = (70, 96, 148)
+            pygame.draw.rect(
+                panel,
+                highlight if selected else base_color,
+                option_rect,
+                border_radius=14,
+            )
+            pygame.draw.rect(panel, (68, 92, 140), option_rect, width=2, border_radius=14)
+            label = self.small.render(self.options[idx], True, WHITE if selected else (215, 225, 240))
+            marker = pygame.Surface((28, 28), pygame.SRCALPHA)
+            pygame.draw.circle(marker, (240, 220, 140) if selected else (110, 140, 190), (14, 14), 14)
+            marker_text = self.small.render(str(idx + 1), True, (20, 26, 32))
+            marker.blit(marker_text, marker_text.get_rect(center=(14, 14)))
+            panel.blit(marker, (option_rect.x + 12, option_rect.y + 9))
+            panel.blit(label, (option_rect.x + 48, option_rect.y + 10))
 
-        hint = self.small.render("ENTER para confirmar • ESC para cancelar", True, WHITE)
-        panel.blit(hint, (24, panel_h - hint.get_height() - 18))
+        footer_text = "ENTER para confirmar  •  ESC para cancelar  •  Usa ↑/↓ o números"
+        hint = self.small.render(footer_text, True, (210, 220, 235))
+        panel.blit(hint, (32, panel_h - hint.get_height() - 24))
+        pygame.draw.rect(panel, (92, 124, 182), body_rect, width=2, border_radius=26)
 
-        x = max(40, int(surface.get_width() * 0.08))
-        y = int(surface.get_height() * 0.18)
+        x = max(40, int(surface.get_width() * 0.06))
+        y = int(surface.get_height() * 0.16)
         surface.blit(panel, (x, y))
+
+
+class ChatWindow:
+    def __init__(self, title, participant, question, options, font=None, small=None):
+        self.title = title
+        self.participant = participant
+        self.question = question
+        self.font = font or pygame.font.SysFont("arial", 20, bold=True)
+        self.small = small or pygame.font.SysFont("arial", 16)
+        self.body = pygame.font.SysFont("arial", 15)
+        self.history: list[dict[str, object]] = []
+        self.summary_lines: list[str] = []
+        self.closed = False
+        self.cancelled = False
+        self.mode = "options"
+        self.index = 0
+        self.options = []
+        self.set_options(options)
+
+    def set_options(self, options):
+        mapped = []
+        for idx, opt in enumerate(options or []):
+            if isinstance(opt, str):
+                mapped.append({"label": opt, "value": opt})
+            else:
+                mapped.append({
+                    "label": opt.get("label") or opt.get("value") or f"Opción {idx + 1}",
+                    "value": opt.get("value") or opt.get("label") or opt,
+                })
+        self.options = mapped
+        self.mode = "options" if self.options else "summary"
+        self.index = 0
+
+    def add_message(self, author: str, text: str, outbound: bool = False):
+        if not text:
+            return
+        entry = {"author": author, "text": text, "outbound": outbound}
+        self.history.append(entry)
+        if len(self.history) > 12:
+            self.history = self.history[-12:]
+
+    def show_outcome(self, summary_lines: list[str]):
+        self.summary_lines = summary_lines or []
+        self.mode = "summary"
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def handle_event(self, event):
+        if self.closed:
+            return None
+        if self.mode == "options":
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_UP, pygame.K_w):
+                    self.index = (self.index - 1) % len(self.options)
+                elif event.key in (pygame.K_DOWN, pygame.K_s):
+                    self.index = (self.index + 1) % len(self.options)
+                elif event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_e):
+                    return self.options[self.index]["value"]
+                elif pygame.K_1 <= event.key <= pygame.K_9:
+                    choice = event.key - pygame.K_1
+                    if 0 <= choice < len(self.options):
+                        self.index = choice
+                        return self.options[self.index]["value"]
+                elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                    self.cancelled = True
+                    self.closed = True
+                    return "__cancel__"
+        elif self.mode == "summary":
+            if event.type == pygame.KEYDOWN and event.key in (
+                pygame.K_RETURN,
+                pygame.K_SPACE,
+                pygame.K_ESCAPE,
+            ):
+                self.closed = True
+                return "__closed__"
+        return None
+
+    def draw(self, surface):
+        panel_w = max(360, int(surface.get_width() * 0.3))
+        panel_h = max(420, int(surface.get_height() * 0.68))
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        rect = panel.get_rect()
+        pygame.draw.rect(panel, (14, 20, 32, 235), rect, border_radius=26)
+        header_rect = pygame.Rect(0, 0, panel_w, 86)
+        pygame.draw.rect(
+            panel,
+            (40, 68, 118, 250),
+            header_rect,
+            border_top_left_radius=26,
+            border_top_right_radius=26,
+        )
+        title = self.font.render(self.title, True, WHITE)
+        panel.blit(title, (26, 16))
+        participant_label = self.small.render(f"Chat con {self.participant}", True, (220, 230, 245))
+        panel.blit(participant_label, (26, 48))
+
+        question_rect = pygame.Rect(24, header_rect.bottom + 10, panel_w - 48, 60)
+        pygame.draw.rect(panel, (26, 34, 52), question_rect, border_radius=14)
+        pygame.draw.rect(panel, (62, 88, 140), question_rect, width=2, border_radius=14)
+        question = self.small.render(self.question, True, (210, 220, 235))
+        panel.blit(question, (question_rect.x + 12, question_rect.y + 16))
+
+        history_top = question_rect.bottom + 12
+        history_height = panel_h - history_top - 140
+        history_rect = pygame.Rect(24, history_top, panel_w - 48, history_height)
+        pygame.draw.rect(panel, (18, 26, 42), history_rect, border_radius=14)
+        pygame.draw.rect(panel, (50, 70, 110), history_rect, width=2, border_radius=14)
+
+        y = history_rect.bottom - 16
+        for entry in reversed(self.history):
+            text = str(entry.get("text", ""))
+            author = entry.get("author", "")
+            outbound = entry.get("outbound", False)
+            lines = [self.body.render(author, True, (210, 220, 235))]
+            wrap = self._wrap_text(text, history_rect.width - 36)
+            lines.extend(self.body.render(line, True, (230, 234, 242)) for line in wrap)
+            block_height = sum(line.get_height() for line in lines) + 16
+            bubble = pygame.Surface((history_rect.width - 12, block_height), pygame.SRCALPHA)
+            bubble_rect = bubble.get_rect()
+            bubble_rect.y = y - block_height
+            bg_color = (70, 108, 170, 240) if outbound else (44, 62, 92, 220)
+            pygame.draw.rect(bubble, bg_color, (0, 0, bubble_rect.width, bubble_rect.height), border_radius=14)
+            offset_y = 10
+            for surf_line in lines:
+                bubble.blit(surf_line, (14, offset_y))
+                offset_y += surf_line.get_height()
+            offset_x = history_rect.x + 6
+            if outbound:
+                offset_x = history_rect.right - bubble_rect.width - 6
+            panel.blit(bubble, (offset_x, bubble_rect.y))
+            y -= block_height + 10
+            if y <= history_rect.y + 24:
+                break
+
+        footer_top = history_rect.bottom + 18
+        if self.mode == "options":
+            for idx, option in enumerate(self.options):
+                option_rect = pygame.Rect(32, footer_top + idx * 54, panel_w - 64, 48)
+                is_selected = idx == self.index
+                pygame.draw.rect(
+                    panel,
+                    (70, 100, 158) if is_selected else (28, 40, 62),
+                    option_rect,
+                    border_radius=14,
+                )
+                pygame.draw.rect(panel, (68, 92, 140), option_rect, width=2, border_radius=14)
+                bullet = pygame.Surface((28, 28), pygame.SRCALPHA)
+                pygame.draw.circle(
+                    bullet,
+                    (240, 220, 140) if is_selected else (110, 140, 190),
+                    (14, 14),
+                    14,
+                )
+                num = self.small.render(str(idx + 1), True, (20, 26, 32))
+                bullet.blit(num, num.get_rect(center=(14, 14)))
+                label = self.small.render(str(option["label"]), True, WHITE if is_selected else (210, 220, 235))
+                panel.blit(bullet, (option_rect.x + 12, option_rect.y + 10))
+                panel.blit(label, (option_rect.x + 50, option_rect.y + 12))
+            hint_text = "↑/↓ o números para elegir  •  ENTER para enviar  •  ESC para cerrar"
+        else:
+            summary_y = footer_top
+            for line in self.summary_lines:
+                surf_line = self.small.render(line, True, (215, 225, 240))
+                panel.blit(surf_line, (32, summary_y))
+                summary_y += surf_line.get_height() + 6
+            hint_text = "ENTER para continuar"
+
+        hint = self.small.render(hint_text, True, (210, 220, 235))
+        panel.blit(hint, (32, panel_h - hint.get_height() - 22))
+        pygame.draw.rect(panel, (82, 112, 170), rect, width=2, border_radius=26)
+
+        x = surface.get_width() - panel_w - 32
+        y = int(surface.get_height() * 0.14)
+        surface.blit(panel, (x, y))
+
+    def _wrap_text(self, text: str, max_width: int) -> list[str]:
+        words = text.split()
+        if not words:
+            return [""]
+        lines = []
+        current = words[0]
+        for word in words[1:]:
+            test = f"{current} {word}"
+            if self.body.size(test)[0] <= max_width:
+                current = test
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
