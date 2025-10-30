@@ -1,5 +1,7 @@
 # main.py — versión ordenada para evitar "MenuScene undefined"
 import os, sys, json
+from typing import Optional
+
 import pygame
 
 from settings import (
@@ -7,11 +9,11 @@ from settings import (
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
-    WINE, WINE_HOV, RED  
+    WINE, WINE_HOV, RED
 )
 
 from core.engine import Camera2D, Scene, draw_text
-from game.ui import draw_hud, Button, Slider
+from game.ui import draw_hud, Button, Slider, DecisionPrompt
 
 from game.entities import (
     Player,
@@ -130,8 +132,18 @@ class PlayScene(Scene):
             self.font_overlay = pygame.font.SysFont("arial", 18, bold=True)
         if self.font_overlay_small is None:
             self.font_overlay_small = pygame.font.SysFont("arial", 16)
+        self.decision_prompt: Optional[DecisionPrompt] = None
+        self.decision_option_map: dict[str, str] = {}
+        self.player_tasks: list[dict[str, object]] = []
 
     def handle_event(self, event):
+        if self.decision_prompt:
+            self.decision_prompt.handle_event(event)
+            if self.decision_prompt.finished:
+                selection = self.decision_prompt.selection
+                self.decision_prompt = None
+                self._on_decision_selected(selection)
+            return
         if self.dialogue:
             self.dialogue.handle_event(event)
             if self.dialogue.done:
@@ -139,8 +151,11 @@ class PlayScene(Scene):
 
     def update(self, dt):
         keys = keydict()
-        if not self.dialogue:
+        if not self.dialogue and not self.decision_prompt:
             self.player.handle_input(keys)
+        else:
+            self.player.vx = 0.0
+            self.player.vy = 0.0
         self.player.update(dt, self.map)
         player_room = self.map.room_for_rect(self.player.rect)
         self.player.current_room = player_room.get("name") if player_room else None
@@ -161,26 +176,37 @@ class PlayScene(Scene):
                 agent.idle_step(dt, self.map)
 
         self.decision_status = self.planner.get_status_snapshot()
+        self._update_player_tasks()
 
         if self.message_timer > 0:
             self.message_timer -= dt
             if self.message_timer <= 0:
                 self.message_text = ""
 
-        if keys["interact"] and not self.interact_hold and not self.dialogue:
+        if keys["interact"] and not self.interact_hold and not self.dialogue and not self.decision_prompt:
             self.interact_hold = True
             if self._try_enter_room():
                 self.player.interact_cooldown = 0.6
             elif self._try_support_specialist():
                 self.player.interact_cooldown = 0.6
             else:
+                interacted = False
                 for n in self.npcs:
                     if self.player.rect.colliderect(n.rect.inflate(30,30)):
                         lines = self.scripts.get(n.script_id, ["..."])
                         if n.script_id == "npc_guard" and "Tarjeta de Acceso" in self.player.inventory:
                             lines = self.scripts.get("npc_congrats", ["Bien."])
                         self.dialogue = DialogueBox(lines, n.name)
+                        if n.script_id == "npc_guard" and "Tarjeta de Acceso" not in self.player.inventory:
+                            self.player.adjust_relationship(n.name, -4)
+                            self.player.note_interaction("Guardia desconfía")
+                        else:
+                            self.player.adjust_relationship(n.name, 6)
+                            self.player.note_interaction(f"Conversaste con {n.name}")
+                        interacted = True
                         break
+                if not interacted and not self.dialogue:
+                    self._open_decision_prompt()
         if not keys["interact"]:
             self.interact_hold = False
 
@@ -199,8 +225,9 @@ class PlayScene(Scene):
         for agent in self.specialists: agent.draw(surface, self.camera)
         for e in self.enemies: e.draw(surface, self.camera)
         self.player.draw(surface, self.camera)
-        draw_hud(surface, self.player, self.decision_status)
-        self._draw_action_overlay(surface)
+        draw_hud(surface, self.player, self.decision_status, self.player_tasks)
+        if self.decision_prompt:
+            self.decision_prompt.draw(surface)
         if self.message_text:
             self._draw_message(surface)
         if self.dialogue: self.dialogue.draw(surface)
@@ -233,8 +260,12 @@ class PlayScene(Scene):
                 msg = self.planner.boost_character(agent, helper=self.player)
                 if msg:
                     self._set_message(msg)
+                    self.player.adjust_relationship(agent.name, 6 if "Apoyaste" in msg else 3)
+                    self.player.note_interaction(f"Ayudaste a {agent.name}")
                 else:
                     self._set_message(f"{agent.name}: {agent.status_text()}")
+                    self.player.adjust_relationship(agent.name, 1)
+                    self.player.note_interaction(f"Chequeaste a {agent.name}")
                 return True
         return False
 
@@ -249,14 +280,82 @@ class PlayScene(Scene):
                 self.player.current_room = target_room.get("name")
                 self.planner.report_player_entered_room(self.player.current_room)
                 self._set_message(f"Entraste a {self.player.current_room}")
+                self.player.note_interaction(f"Entraste a {self.player.current_room}")
                 return True
         room = self.map.room_for_rect(self.player.rect)
         if room:
             self.player.current_room = room.get("name")
             self.planner.report_player_entered_room(self.player.current_room)
             self._set_message(f"Estás en {self.player.current_room}")
+            self.player.note_interaction(f"Estás en {self.player.current_room}")
             return True
         return False
+
+    def _open_decision_prompt(self):
+        current_room = self.player.current_room or "el campus"
+        question = f"¿Qué quieres coordinar cerca de {current_room}?"
+        options = [
+            "Coordinar recolección",
+            "Impulsar construcción",
+            "Organizar defensa",
+        ]
+        self.decision_option_map = {
+            "Coordinar recolección": "Recolectar",
+            "Impulsar construcción": "Construir",
+            "Organizar defensa": "Defender/Resguardarse",
+        }
+        self.decision_prompt = DecisionPrompt("Plan inmediato", question, options, self.font_overlay, self.font_overlay_small)
+
+    def _on_decision_selected(self, selection: Optional[str]):
+        if not selection:
+            self._set_message("Decisión cancelada", 1.2)
+            self.player.note_interaction("Decisión cancelada")
+            self.player.adjust_relationship("Equipo", -2)
+            return
+        category = self.decision_option_map.get(selection, selection)
+        action = self.planner.plan_player_choice(category, focus_room=self.player.current_room, helper=self.player)
+        if action:
+            entry = {
+                "name": action.name,
+                "category": action.category,
+                "status": "Planificada",
+                "done": False,
+                "started": False,
+            }
+            self.player_tasks.append(entry)
+            self.player.adjust_relationship("Equipo", 4)
+            self.player.note_interaction(f"Ordenaste {action.category.lower()}")
+            self._set_message(f"Planificado: {action.name}")
+        else:
+            self._set_message("No hay recursos para esa decisión", 2.0)
+            self.player.note_interaction("Plan fallido")
+            self.player.adjust_relationship("Equipo", -3)
+
+    def _update_player_tasks(self):
+        if not self.player_tasks or not self.decision_status:
+            return
+        active_info = {}
+        for char_name, action_name, category, progress, from_event in self.decision_status.get("active", []):
+            active_info[action_name] = (char_name, progress, from_event)
+        history = self.decision_status.get("history", [])
+        for task in self.player_tasks:
+            if task.get("done"):
+                continue
+            name = task["name"]
+            if name in active_info:
+                char_name, progress, _ = active_info[name]
+                task["status"] = f"{char_name}: {int(progress * 100)}%"
+                task["started"] = True
+                continue
+            if any(f"inició {name}" in h for h in history):
+                task["status"] = "Asignada"
+                task["started"] = True
+                continue
+            if any(f"completó {name}" in h for h in history):
+                task["status"] = "Completada"
+                task["done"] = True
+                self.player.adjust_relationship("Equipo", 5)
+                self.player.note_interaction(f"{name} completada")
 
     def _draw_message(self, surface):
         msg_surf = self.font_overlay_small.render(self.message_text, True, (255, 255, 255))
@@ -266,39 +365,6 @@ class PlayScene(Scene):
         y = surface.get_height() - bg.get_height() - 20
         surface.blit(bg, (20, y))
         surface.blit(msg_surf, (20 + padding, y + (padding // 2)))
-
-    def _draw_action_overlay(self, surface):
-        if not self.decision_status:
-            return
-        panel_w, panel_h = 320, 220
-        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        panel.fill((15, 20, 32, 220))
-        y = 12
-        title = self.font_overlay.render("Planificador", True, (255, 255, 255))
-        panel.blit(title, (12, y))
-        y += title.get_height() + 6
-        for entry in self.decision_status.get("active", [])[:6]:
-            name, category, progress, from_event = entry
-            pct = int(progress * 100)
-            text = f"{name}: {category} {pct}%"
-            if from_event:
-                text += " (!)"
-            line = self.font_overlay_small.render(text, True, (220, 230, 240))
-            panel.blit(line, (12, y))
-            y += line.get_height() + 2
-        history = self.decision_status.get("history", [])
-        if history:
-            y += 4
-            hist_title = self.font_overlay_small.render("Historial", True, (190, 200, 220))
-            panel.blit(hist_title, (12, y))
-            y += hist_title.get_height() + 2
-            for entry in history:
-                line = self.font_overlay_small.render(entry, True, (170, 180, 200))
-                panel.blit(line, (16, y))
-                y += line.get_height() + 1
-                if y > panel_h - 18:
-                    break
-        surface.blit(panel, (surface.get_width() - panel_w - 18, 16))
 
 class MenuScene(Scene):
     def __init__(self, game):

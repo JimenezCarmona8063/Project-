@@ -4,7 +4,7 @@ import os
 # -----------------------------
 # Pantalla / Juego base
 # -----------------------------
-WIDTH, HEIGHT = 960, 540
+WIDTH, HEIGHT = 1280, 720
 FPS = 60
 TITLE = "UP Adventure — Starter Kit (Top-Down)"
 TILE = 32

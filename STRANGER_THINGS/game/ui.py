@@ -73,53 +73,181 @@ class Slider:
         knob_x = int(self.rect.x + self.value * self.rect.w)
         pygame.draw.circle(surface, (220,220,220), (knob_x, self.rect.centery), max(6, self.rect.h//3))
 
-def draw_hud(surface, player, planner_status=None):
-    font = pygame.font.SysFont("arial", 18, bold=True)
+def draw_hud(surface, player, planner_status=None, task_log=None):
+    font = pygame.font.SysFont("arial", 20, bold=True)
     small = pygame.font.SysFont("arial", 16)
+    tiny = pygame.font.SysFont("arial", 14)
 
-    bar_rect = pygame.Rect(12, 12, 220, 20)
-    pygame.draw.rect(surface, (25, 25, 25), bar_rect, border_radius=8)
+    panel_w = 300
+    panel = pygame.Surface((panel_w, surface.get_height()), pygame.SRCALPHA)
+    panel.fill((12, 18, 28, 235))
+
+    y = 18
+    title = font.render("Panel de Misión", True, WHITE)
+    panel.blit(title, (18, y))
+    y += title.get_height() + 10
+
+    hp_label = small.render("Salud", True, WHITE)
+    panel.blit(hp_label, (18, y))
+    y += hp_label.get_height() + 4
+    bar_rect = pygame.Rect(18, y, panel_w - 36, 22)
+    pygame.draw.rect(panel, (35, 30, 30), bar_rect, border_radius=10)
     inner = bar_rect.inflate(-4, -4)
     ratio = 1.0
     if getattr(player, "max_hp", 0):
         ratio = max(0.0, min(1.0, float(getattr(player, "hp", 0)) / float(player.max_hp)))
-    pygame.draw.rect(surface, RED, inner, border_radius=6)
+    pygame.draw.rect(panel, RED, inner, border_radius=8)
     fill = inner.copy()
     fill.width = int(inner.width * ratio)
-    pygame.draw.rect(surface, GREEN, fill, border_radius=6)
-    label = font.render(f"HP {int(getattr(player, 'hp', 0))}/{int(getattr(player, 'max_hp', 0))}", True, WHITE)
-    surface.blit(label, (bar_rect.x, bar_rect.y - 24))
+    pygame.draw.rect(panel, GREEN, fill, border_radius=8)
+    hp_text = tiny.render(f"{int(getattr(player, 'hp', 0))}/{int(getattr(player, 'max_hp', 0))}", True, WHITE)
+    panel.blit(hp_text, (inner.x + 6, inner.y + 2))
+    y += bar_rect.height + 12
 
-    info_lines = []
+    social_state = getattr(player, "mood", "Neutral")
     room = getattr(player, "current_room", None)
+    info_lines = [f"Ánimo social: {social_state}"]
     if room:
-        info_lines.append(f"Salón: {room}")
+        info_lines.append(f"Salón actual: {room}")
     info_lines.append(f"Inventario: {len(getattr(player, 'inventory', []))}")
-
-    y = bar_rect.bottom + 6
     for line in info_lines:
-        s = small.render(line, True, WHITE)
-        surface.blit(s, (bar_rect.x, y))
-        y += s.get_height() + 2
+        text = small.render(line, True, WHITE)
+        panel.blit(text, (18, y))
+        y += text.get_height() + 4
+
+    relationships_fn = getattr(player, "top_relationships", None)
+    rels = relationships_fn() if callable(relationships_fn) else []
+    if rels:
+        y += 6
+        rel_title = small.render("Relaciones", True, WHITE)
+        panel.blit(rel_title, (18, y))
+        y += rel_title.get_height() + 2
+        for name, value in rels:
+            rel_text = tiny.render(f"{name}: {int(value)}", True, WHITE)
+            panel.blit(rel_text, (28, y))
+            y += rel_text.get_height() + 2
+
+    log = list(getattr(player, "interaction_log", []))
+    if log:
+        y += 8
+        log_title = small.render("Interacciones", True, WHITE)
+        panel.blit(log_title, (18, y))
+        y += log_title.get_height() + 2
+        for entry in log:
+            entry_surf = tiny.render(entry, True, WHITE)
+            panel.blit(entry_surf, (28, y))
+            y += entry_surf.get_height() + 2
+
+    tasks = task_log or []
+    if tasks:
+        y += 10
+        tasks_title = small.render("Tus decisiones", True, WHITE)
+        panel.blit(tasks_title, (18, y))
+        y += tasks_title.get_height() + 4
+        for task in tasks[-5:]:
+            desc = tiny.render(task["name"], True, WHITE)
+            panel.blit(desc, (24, y))
+            y += desc.get_height() + 1
+            status = tiny.render(task.get("status", ""), True, WHITE)
+            panel.blit(status, (30, y))
+            y += status.get_height() + 4
 
     if planner_status:
+        y = max(y + 8, surface.get_height() - 190)
+        stats_title = small.render("Operaciones", True, WHITE)
+        panel.blit(stats_title, (18, y))
+        y += stats_title.get_height() + 4
         active_total = planner_status.get("active_total", 0)
         max_parallel = planner_status.get("max_parallel", active_total)
         queue = planner_status.get("queue", 0)
         buffer_size = planner_status.get("buffer", 0)
-        resources = planner_status.get("resources", {})
-        res_text = " ".join(
-            f"{key[:1].upper()}{int(value)}" for key, value in resources.items()
-        )
-        planner_lines = [
-            f"Acciones: {active_total}/{max_parallel}",
-            f"Heap: {queue}  Buffer: {buffer_size}",
-            f"Recursos: {res_text}",
+        lines = [
+            f"Acciones activas: {active_total}/{max_parallel}",
+            f"En heap: {queue}  Buffer: {buffer_size}",
         ]
+        resources = planner_status.get("resources", {})
+        if resources:
+            res_text = " | ".join(
+                f"{key[:1].upper()}: {int(value)}" for key, value in resources.items()
+            )
+            lines.append(f"Recursos: {res_text}")
         last_event = planner_status.get("last_event")
         if last_event:
-            planner_lines.append(last_event)
-        for line in planner_lines:
-            s = small.render(line, True, WHITE)
-            surface.blit(s, (bar_rect.x, y))
-            y += s.get_height() + 2
+            lines.append(last_event)
+        for line in lines:
+            text = tiny.render(line, True, WHITE)
+            panel.blit(text, (18, y))
+            y += text.get_height() + 2
+
+        active = planner_status.get("active", [])
+        if active:
+            y += 4
+            active_title = tiny.render("Asignaciones cercanas", True, WHITE)
+            panel.blit(active_title, (18, y))
+            y += active_title.get_height() + 2
+            for char_name, action_name, category, progress, from_event in active[:4]:
+                suffix = " (!)" if from_event else ""
+                text = tiny.render(
+                    f"{char_name}: {category} {int(progress * 100)}%{suffix}", True, WHITE
+                )
+                panel.blit(text, (24, y))
+                y += text.get_height() + 1
+
+    surface.blit(panel, (0, 0))
+
+
+class DecisionPrompt:
+    def __init__(self, title, question, options, font=None, small=None):
+        self.title = title
+        self.question = question
+        self.options = list(options)
+        self.index = 0
+        self.finished = False
+        self.selection = None
+        self.font = font or pygame.font.SysFont("arial", 24, bold=True)
+        self.small = small or pygame.font.SysFont("arial", 18)
+
+    def handle_event(self, event):
+        if self.finished:
+            return
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_UP, pygame.K_w):
+                self.index = (self.index - 1) % len(self.options)
+            elif event.key in (pygame.K_DOWN, pygame.K_s):
+                self.index = (self.index + 1) % len(self.options)
+            elif event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_e):
+                self.selection = self.options[self.index]
+                self.finished = True
+            elif event.key in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+                self.selection = None
+                self.finished = True
+
+    def draw(self, surface):
+        panel_w = int(surface.get_width() * 0.42)
+        panel_h = 260
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((16, 20, 32, 240))
+        pygame.draw.rect(panel, (70, 90, 140), panel.get_rect(), width=2, border_radius=16)
+
+        y = 24
+        title = self.font.render(self.title, True, WHITE)
+        panel.blit(title, (24, y))
+        y += title.get_height() + 6
+        question = self.small.render(self.question, True, WHITE)
+        panel.blit(question, (24, y))
+        y += question.get_height() + 14
+
+        for idx, option in enumerate(self.options):
+            selected = idx == self.index
+            color = (240, 220, 120) if selected else WHITE
+            marker = "▶ " if selected else "  "
+            text = self.small.render(marker + option, True, color)
+            panel.blit(text, (32, y))
+            y += text.get_height() + 8
+
+        hint = self.small.render("ENTER para confirmar • ESC para cancelar", True, WHITE)
+        panel.blit(hint, (24, panel_h - hint.get_height() - 18))
+
+        x = max(40, int(surface.get_width() * 0.08))
+        y = int(surface.get_height() * 0.18)
+        surface.blit(panel, (x, y))

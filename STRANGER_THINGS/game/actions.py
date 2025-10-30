@@ -147,12 +147,50 @@ class ActionPlanner:
     def enqueue_action(self, action: Action) -> None:
         self.instruction_buffer.put(action)
 
+    def plan_player_choice(
+        self,
+        category: str,
+        focus_room: Optional[str] = None,
+        helper: Optional["Character"] = None,
+    ) -> Optional[Action]:
+        rooms = [room.get("name") for room in self.rooms if room.get("name")]
+        action: Optional[Action] = None
+        if category.lower().startswith("recolect"):
+            variant = random.choice(["cosecha", "caza"])
+            action = self._make_recolectar_action(rooms, variant=variant)
+        elif category.lower().startswith("constru"):
+            action = self._make_construir_action(rooms)
+        elif category.lower().startswith("defend"):
+            focus = focus_room or (rooms[0] if rooms else None)
+            action = self._make_defensa_action(focus)
+            action.generated_by_event = False
+        if not action:
+            return None
+        action.compatibility = set(action.compatibility)
+        action.compatibility.add("lider")
+        if focus_room:
+            action.target_room = focus_room
+            if " en " in action.name:
+                base, _, _ = action.name.partition(" en ")
+                action.name = f"{base} en {focus_room}"
+            else:
+                action.name = f"{action.name} en {focus_room}"
+        if helper:
+            action.priority = max(0.1, action.priority * 0.75)
+        else:
+            action.priority = max(0.2, action.priority)
+        self.history.prepend(f"El jugador decidió {action.name}")
+        self.last_event = f"Decisión jugador: {action.category}"
+        self.enqueue_action(action)
+        return action
+
     def get_status_snapshot(self) -> Dict[str, object]:
         active_snapshot = []
         for active in self.active[:8]:
             active_snapshot.append(
                 (
                     active.character.name,
+                    active.action.name,
                     active.action.category,
                     round(active.progress(), 2),
                     active.action.generated_by_event,

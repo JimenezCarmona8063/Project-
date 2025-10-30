@@ -1,5 +1,6 @@
 # game/entities.py
 import random
+from collections import deque
 from typing import Iterable, Optional
 
 import pygame
@@ -219,6 +220,9 @@ class Player(Character):
         )
         self.inventory = []
         self.interact_cooldown = 0.0
+        self.relationships: dict[str, float] = {}
+        self.interaction_log: deque[str] = deque(maxlen=6)
+        self.mood = "Neutral"
 
     def handle_input(self, keys):
         self.vx = (keys.get("right", False) - keys.get("left", False)) * self.speed
@@ -240,6 +244,35 @@ class Player(Character):
         vel = pygame.Vector2(self.vx, self.vy)
         self.rect = move_with_collision(self.rect, vel, tilemap, dt)
         self.tick_anim(dt, vel.length_squared() > 0.1)
+
+    def adjust_relationship(self, name: str, delta: float) -> None:
+        base = self.relationships.get(name, 50.0)
+        base = max(0.0, min(100.0, base + delta))
+        self.relationships[name] = base
+        self._update_mood()
+
+    def note_interaction(self, text: str) -> None:
+        if not text:
+            return
+        self.interaction_log.appendleft(text)
+
+    def top_relationships(self, count: int = 3):
+        items = sorted(self.relationships.items(), key=lambda kv: kv[1], reverse=True)
+        return items[:count]
+
+    def _update_mood(self) -> None:
+        if not self.relationships:
+            self.mood = "Neutral"
+            return
+        avg = sum(self.relationships.values()) / len(self.relationships)
+        if avg >= 75:
+            self.mood = "Aliado"
+        elif avg >= 55:
+            self.mood = "Colaborativo"
+        elif avg >= 35:
+            self.mood = "Neutral"
+        else:
+            self.mood = "Tenso"
 
 
 class NPC(Character):
