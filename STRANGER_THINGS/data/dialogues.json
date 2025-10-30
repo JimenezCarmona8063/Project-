@@ -1,0 +1,14 @@
+{
+  "npc_prof": [
+    "¡Hey! Bienvenido a UP Adventure.",
+    "Trae de la cafetería una *Tarjeta de Acceso* y vuelve conmigo.",
+    "Con eso podrás entrar al laboratorio."
+  ],
+  "npc_guard": [
+    "No puedes pasar sin Tarjeta de Acceso.",
+    "Regresa cuando la tengas."
+  ],
+  "npc_congrats": [
+    "¡Eso es! Ya puedes entrar al lab. ¡Suerte!"
+  ]
+}
