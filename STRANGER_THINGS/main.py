@@ -8,7 +8,7 @@ from settings import (
     WIDTH, HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, FULLSCREEN,
     FPS, TILE, TITLE,
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
-    KEY_ACTION_RUSH,
+    KEY_ACTION_RUSH, KEY_FIGHT, KEY_MESSAGE,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
     WINE, WINE_HOV, RED, HUD_PANEL_WIDTH
@@ -48,6 +48,8 @@ def keydict():
         "interact": keys[getattr(pygame, "K_"+KEY_INTERACT)],
         "inventory": keys[getattr(pygame, "K_"+KEY_INVENTORY)],
         "rush": keys[getattr(pygame, "K_"+KEY_ACTION_RUSH)],
+        "fight": keys[getattr(pygame, "K_"+KEY_FIGHT)],
+        "message": keys[getattr(pygame, "K_"+KEY_MESSAGE)],
     }
     return kd
 
@@ -220,6 +222,8 @@ class PlayScene(Scene):
         if self.font_overlay_small is None:
             self.font_overlay_small = pygame.font.SysFont("arial", 16)
         self.decision_prompt: Optional[DecisionPrompt] = None
+        self.message_prompt: Optional[DecisionPrompt] = None
+        self.message_prompt_target: Optional[dict[str, object]] = None
         self.decision_option_map: dict[str, str] = {}
         self.player_tasks: list[dict[str, object]] = []
         self.random_task_timer = random.uniform(12.0, 22.0)
@@ -233,13 +237,29 @@ class PlayScene(Scene):
         self.player_dead = False
         self.rush_cooldown = 0.0
         self.rush_hold = False
+        self.fight_hold = False
+        self.message_hold = False
         self.recent_task_sources: dict[str, float] = {}
+        self.room_task_cooldowns: dict[str, float] = {}
+        self.activity_markers: list[dict[str, object]] = []
+        self.active_fight: Optional[dict[str, object]] = None
+        self.activity_font = load_ui_font(16)
+        if self.activity_font is None:
+            self.activity_font = pygame.font.SysFont("arial", 16, bold=True)
+        self.room_activity_map = self._build_room_activity_map()
 
     def handle_event(self, event):
         if self.player_dead:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.game.play_scene = None
                 self.game.change_scene(MenuScene(self.game))
+            return
+        if self.message_prompt:
+            self.message_prompt.handle_event(event)
+            if self.message_prompt.finished:
+                selection = self.message_prompt.selection
+                self.message_prompt = None
+                self._resolve_message_choice(selection)
             return
         if self.decision_prompt:
             self.decision_prompt.handle_event(event)
@@ -270,9 +290,14 @@ class PlayScene(Scene):
                 # deja listo para una nueva misión al acercarse de nuevo
                 self.recent_task_sources[name] = 0.0
 
+        for room_name in list(self.room_task_cooldowns.keys()):
+            self.room_task_cooldowns[room_name] = max(0.0, self.room_task_cooldowns[room_name] - dt)
+            if self.room_task_cooldowns[room_name] <= 0:
+                del self.room_task_cooldowns[room_name]
+
         if self.food_prompt_cooldown > 0:
             self.food_prompt_cooldown = max(0.0, self.food_prompt_cooldown - dt)
-        if not self.dialogue and not self.decision_prompt:
+        if not self.dialogue and not self.decision_prompt and not self.message_prompt:
             self.player.handle_input(keys)
         else:
             self.player.vx = 0.0
@@ -294,6 +319,20 @@ class PlayScene(Scene):
         else:
             self.rush_hold = False
 
+        if keys.get("fight"):
+            if not self.fight_hold and not self.decision_prompt and not self.dialogue and not self.message_prompt:
+                self._start_fight()
+            self.fight_hold = True
+        else:
+            self.fight_hold = False
+
+        if keys.get("message"):
+            if not self.message_hold and not self.dialogue and not self.decision_prompt and not self.message_prompt:
+                self._open_message_prompt()
+            self.message_hold = True
+        else:
+            self.message_hold = False
+
         for n in self.npcs:
             n.update(dt, self.map)
         for e in self.enemies:
@@ -313,6 +352,8 @@ class PlayScene(Scene):
         self._update_player_tasks()
         self._update_random_events(dt)
         self._check_player_survival()
+        self._update_fight(dt)
+        self._tick_activity_markers(dt)
 
         if self.message_timer > 0:
             self.message_timer -= dt
@@ -383,11 +424,16 @@ class PlayScene(Scene):
         for e in self.enemies:
             e.draw(map_surface, self.camera)
         self.player.draw(map_surface, self.camera)
+        self._draw_activity_markers(map_surface)
         draw_hud(surface, self.player, self.decision_status, self.player_tasks)
         if self.decision_prompt:
             self.decision_prompt.draw(surface)
+        if self.message_prompt:
+            self.message_prompt.draw(surface)
         if self.message_text:
             self._draw_message(surface)
+        if self.active_fight:
+            self._draw_fight_banner(surface)
         if self.dialogue: self.dialogue.draw(surface)
         if self.player_dead:
             self._draw_game_over(surface)
@@ -422,10 +468,12 @@ class PlayScene(Scene):
                     self._set_message(msg)
                     self.player.adjust_relationship(agent.name, 6 if "Apoyaste" in msg else 3)
                     self.player.note_interaction(f"Ayudaste a {agent.name}")
+                    self._add_activity_marker(f"Ayudando a {agent.name}", pos=agent.rect.center)
                 else:
                     self._set_message(f"{agent.name}: {agent.status_text()}")
                     self.player.adjust_relationship(agent.name, 1)
                     self.player.note_interaction(f"Chequeaste a {agent.name}")
+                    self._add_activity_marker(f"Revisión de {agent.name}", pos=agent.rect.center, color=(200, 240, 180))
                 return True
         return False
 
@@ -486,6 +534,7 @@ class PlayScene(Scene):
             self.player.adjust_relationship("Equipo", 4)
             self.player.note_interaction(f"Ordenaste {action.category.lower()}")
             self._set_message(f"Planificado: {action.name}")
+            self._add_activity_marker(f"Plan: {action.category}")
         else:
             self._set_message("No hay recursos para esa decisión", 2.0)
             self.player.note_interaction("Plan fallido")
@@ -542,7 +591,8 @@ class PlayScene(Scene):
         else:
             self.random_task_timer -= dt
             if self.random_task_timer <= 0:
-                self._spawn_random_task()
+                room_source = self.player.current_room
+                self._spawn_random_task(source_name=room_source, focus_room=room_source)
                 self.random_task_timer = random.uniform(18.0, 30.0)
 
         if self.greeting_timer > 0:
@@ -590,38 +640,9 @@ class PlayScene(Scene):
             self._complete_auto_task(key, False)
 
     def _spawn_random_task(self, source_name: Optional[str] = None, focus_room: Optional[str] = None):
-        templates = [
-            {
-                "name": "Apoyo académico urgente",
-                "planner_category": "Apoyo académico",
-                "penalty": 12,
-                "reward": {"grades": 5},
-            },
-            {
-                "name": "Montar taller relámpago",
-                "planner_category": "Montar taller",
-                "penalty": 10,
-                "reward": {"grades": 4, "social": 3},
-            },
-            {
-                "name": "Plan rápido de seguridad",
-                "planner_category": "Plan de seguridad",
-                "penalty": 9,
-                "reward": {"social": 5},
-            },
-            {
-                "name": "Comer algo rápido",
-                "type": "food",
-                "penalty": 10,
-                "reward": {"hunger": 40},
-            },
-            {
-                "name": "Charla con aliados",
-                "type": "social",
-                "penalty": 11,
-                "reward": {"social": 10},
-            },
-        ]
+        templates = self._templates_for_room(focus_room)
+        if not templates:
+            templates = self._templates_for_room(None)
         template = random.choice(templates)
         entry: dict[str, object] = {
             "name": template["name"],
@@ -633,6 +654,7 @@ class PlayScene(Scene):
             "penalty": template.get("penalty", 8),
             "reward": template.get("reward", {}),
             "auto_key": template.get("name"),
+            "room": focus_room,
         }
         if template.get("planner_category"):
             action = self.planner.plan_player_choice(
@@ -654,9 +676,13 @@ class PlayScene(Scene):
                 entry["status"] = f"{source_name} coordina"
         self.player_tasks.append(entry)
         if source_name:
-            self.player.push_alert(f"{source_name} propone: {entry['name']}")
+            if focus_room and source_name == focus_room:
+                alert = f"Actividades en {source_name}: {entry['name']}"
+            else:
+                alert = f"{source_name} propone: {entry['name']}"
+            self.player.push_alert(alert)
             self.player.note_interaction(f"{source_name} pidió ayuda")
-            self._set_message(f"{source_name} lanzó {entry['name']}", 2.8)
+            self._set_message(alert, 2.8)
         else:
             self.player.push_alert(f"Nueva tarea: {entry['name']}")
             self.player.note_interaction(f"Nueva tarea: {entry['name']}")
@@ -667,6 +693,8 @@ class PlayScene(Scene):
         elif template.get("type") == "social":
             self.pending_social_task_key = entry["auto_key"]
             self._trigger_random_greeting(force=True, task_key=entry["auto_key"])
+        marker_color = (200, 220, 255) if focus_room else (245, 240, 200)
+        self._add_activity_marker(entry["name"], pos=pygame.Vector2(self.player.rect.center), color=marker_color)
         return entry
 
     def _check_proximity_task_spawn(self) -> bool:
@@ -685,6 +713,13 @@ class PlayScene(Scene):
                 if closest is None or dist < closest[1]:
                     closest = (agent, dist)
         if not closest:
+            player_room = self.player.current_room
+            if player_room:
+                cooldown = self.room_task_cooldowns.get(player_room, 0.0)
+                if cooldown <= 0.0:
+                    self._spawn_random_task(source_name=player_room, focus_room=player_room)
+                    self.room_task_cooldowns[player_room] = random.uniform(22.0, 32.0)
+                    return True
             return False
         entity, _ = closest
         name = getattr(entity, "name", "Alumno")
@@ -695,6 +730,8 @@ class PlayScene(Scene):
         room_name = room.get("name") if room else None
         self._spawn_random_task(source_name=name, focus_room=room_name)
         self.recent_task_sources[name] = random.uniform(18.0, 28.0)
+        if room_name:
+            self.room_task_cooldowns[room_name] = random.uniform(16.0, 24.0)
         return True
 
     def _activate_food_prompt(self, force: bool = False) -> None:
@@ -727,6 +764,7 @@ class PlayScene(Scene):
         self.player.adjust_grades(+2.0)
         self.player.note_interaction("Tomaste un snack energético")
         self._set_message("Comiste algo rápido", 1.6)
+        self._add_activity_marker("Snack rápido")
         if self.pending_food_task_key:
             self._complete_auto_task(self.pending_food_task_key, True)
             self.pending_food_task_key = None
@@ -747,6 +785,7 @@ class PlayScene(Scene):
                 self._complete_auto_task(self.pending_social_task_key, True)
                 self.pending_social_task_key = None
             self._set_message(f"Saludaste a {agent.name}", 1.8)
+            self._add_activity_marker(f"Saludo a {agent.name}", pos=agent.rect.center, color=(200, 220, 255))
             return True
         return False
 
@@ -801,14 +840,16 @@ class PlayScene(Scene):
                     self.player.restore_hunger(float(reward["hunger"]))
                 self.player.adjust_relationship("Equipo", 5)
                 self.player.note_interaction(f"Tarea {task['name']} completada")
+                self._add_activity_marker(f"✔ {task['name']}")
             else:
                 task["status"] = "Fallida"
                 task["started"] = True
-                self.player.adjust_grades(-penalty)
-                self.player.adjust_social(-penalty * 0.4)
-                self.player.hp = max(0.0, self.player.hp - penalty * 0.3)
+                self.player.adjust_grades(-penalty * 0.6)
+                self.player.adjust_social(-penalty * 0.3)
+                self.player.take_damage(penalty * 0.2)
                 self.player.push_alert(f"Fallaste {task['name']}")
                 self.player.note_interaction(f"Perdiste la tarea {task['name']}")
+                self._add_activity_marker(f"✖ {task['name']}", color=(255, 120, 120))
             return
 
     def _check_player_survival(self) -> None:
@@ -841,6 +882,358 @@ class PlayScene(Scene):
         center_x = self.panel_width + width // 2
         surface.blit(title, title.get_rect(center=(center_x, surface.get_height() // 2 - 24)))
         surface.blit(subtitle, subtitle.get_rect(center=(center_x, surface.get_height() // 2 + 12)))
+
+    def _tick_activity_markers(self, dt: float) -> None:
+        if not self.activity_markers:
+            return
+        remaining: list[dict[str, object]] = []
+        for marker in self.activity_markers:
+            marker["timer"] -= dt
+            if marker["timer"] <= 0:
+                continue
+            pos = marker.get("pos")
+            if isinstance(pos, pygame.Vector2):
+                marker["pos"] = pos + pygame.Vector2(0, -12 * dt)
+            remaining.append(marker)
+        self.activity_markers = remaining[-24:]
+
+    def _add_activity_marker(self, text: str, pos=None, color=(245, 240, 180)) -> None:
+        if not text or self.activity_font is None:
+            return
+        vector = pygame.Vector2(self.player.rect.center) if pos is None else pygame.Vector2(pos)
+        marker = {"text": text, "pos": vector, "timer": 3.2, "color": color}
+        self.activity_markers.append(marker)
+        if len(self.activity_markers) > 24:
+            self.activity_markers = self.activity_markers[-24:]
+
+    def _draw_activity_markers(self, surface: pygame.Surface) -> None:
+        if not self.activity_markers or self.activity_font is None:
+            return
+        for marker in self.activity_markers:
+            pos: pygame.Vector2 = marker.get("pos", pygame.Vector2(self.player.rect.center))
+            rect = pygame.Rect(int(pos.x) - 6, int(pos.y) - 6, 12, 12)
+            screen_rect = self.camera.apply(rect)
+            label = marker.get("text", "")
+            color = marker.get("color", (255, 255, 255))
+            text_surf = self.activity_font.render(label, True, color)
+            bg = pygame.Surface((text_surf.get_width() + 6, text_surf.get_height() + 4), pygame.SRCALPHA)
+            bg.fill((12, 16, 24, 170))
+            surface.blit(bg, (screen_rect.x - 2, screen_rect.y - 28))
+            surface.blit(text_surf, (screen_rect.x + 1, screen_rect.y - 26))
+
+    def _update_fight(self, dt: float) -> None:
+        if not self.active_fight:
+            return
+        target = self.active_fight.get("target")
+        if target and getattr(target, "dead", False):
+            self.active_fight = None
+            return
+        phase = self.active_fight.get("phase", "windup")
+        self.active_fight["timer"] -= dt
+        if phase == "windup" and self.active_fight["timer"] <= 0:
+            self._resolve_fight()
+        elif phase == "cooldown" and self.active_fight["timer"] <= 0:
+            self.active_fight = None
+
+    def _start_fight(self) -> None:
+        if self.active_fight:
+            self._set_message("Ya estás en una pelea", 1.2)
+            return
+        target_info = self._nearest_fight_target()
+        if not target_info:
+            self._set_message("No hay nadie cerca para pelear", 1.4)
+            return
+        target, _ = target_info
+        name = getattr(target, "name", "Adversario")
+        if hasattr(target, "request_interaction"):
+            target.request_interaction(lambda: self.player.rect.center, duration=6.0)
+        self.player.add_social_message(name, "¿Qué pasa? ¿Quieres problemas?")
+        self.player.adjust_social(-6)
+        self.player.adjust_relationship(name, -5)
+        self.player.note_interaction(f"Iniciaste una pelea con {name}")
+        self.player.push_alert(f"Pelea iniciada con {name}")
+        self._add_activity_marker(f"Pelea con {name}")
+        self.active_fight = {
+            "target": target,
+            "name": name,
+            "timer": 2.6,
+            "phase": "windup",
+            "text": "",
+            "result": "",
+        }
+
+    def _resolve_fight(self) -> None:
+        if not self.active_fight:
+            return
+        name = self.active_fight.get("name", "Adversario")
+        target = self.active_fight.get("target")
+        roll = random.random()
+        if roll < 0.45:
+            self.active_fight["result"] = "derrota"
+            self.active_fight["text"] = f"{name} te supera"
+            self.player.take_damage(10.0)
+            self.player.adjust_social(-8)
+            self.player.adjust_relationship(name, -8)
+            self.player.add_social_message(name, random.choice([
+                "Te dije que no te metieras conmigo",
+                "Tranquilo, pero piensa dos veces antes de pelear",
+            ]))
+            self._add_activity_marker(f"Perdiste contra {name}", color=(255, 110, 110))
+        else:
+            self.active_fight["result"] = "victoria"
+            self.active_fight["text"] = f"Dominas a {name}"
+            self.player.adjust_social(+6)
+            self.player.adjust_relationship(name, -3)
+            self.player.note_interaction(f"Ganaste la pelea con {name}")
+            if target and hasattr(target, "take_damage"):
+                target.take_damage(12.0)
+            self.player.add_social_message(name, random.choice([
+                "Está bien, ganaste esta vez...",
+                "Ok, respeto tu determinación",
+            ]))
+            self._add_activity_marker(f"Ganaste a {name}", color=(255, 200, 140))
+        if target and hasattr(target, "clear_interaction_request"):
+            target.clear_interaction_request()
+        self.active_fight["phase"] = "cooldown"
+        self.active_fight["timer"] = 2.8
+
+    def _draw_fight_banner(self, surface: pygame.Surface) -> None:
+        if not self.active_fight or self.font_overlay_small is None:
+            return
+        phase = self.active_fight.get("phase", "windup")
+        name = self.active_fight.get("name", "Adversario")
+        timer = max(0.0, self.active_fight.get("timer", 0.0))
+        if phase == "windup":
+            color = (210, 120, 40, 180)
+            text = f"Pelea con {name}: resolviendo en {timer:0.1f}s"
+        else:
+            result = self.active_fight.get("result")
+            color = (180, 40, 40, 180) if result == "derrota" else (60, 170, 100, 180)
+            text = self.active_fight.get("text") or f"Pelea con {name} resuelta"
+        width = surface.get_width() - self.panel_width
+        banner = pygame.Surface((width, 46), pygame.SRCALPHA)
+        banner.fill(color)
+        text_surf = self.font_overlay_small.render(text, True, (255, 255, 255))
+        surface.blit(banner, (self.panel_width, 12))
+        surface.blit(text_surf, (self.panel_width + 16, 22))
+
+    def _nearest_fight_target(self):
+        player_center = pygame.Vector2(self.player.rect.center)
+        best = None
+        best_dist = None
+        candidates = list(self.npcs) + list(self.enemies)
+        candidates += [agent for agent in self.specialists if getattr(agent, "visible", True)]
+        for entity in candidates:
+            center = pygame.Vector2(entity.rect.center)
+            dist = player_center.distance_to(center)
+            if dist <= 180:
+                if best is None or dist < best_dist:
+                    best = entity
+                    best_dist = dist
+        if best is None:
+            return None
+        return best, best_dist
+
+    def _open_message_prompt(self) -> None:
+        target = self._choose_message_target()
+        if not target:
+            self._set_message("No tienes a quién enviar mensaje ahora", 1.4)
+            return
+        self.message_prompt_target = target
+        name = target["name"]
+        question = f"¿Qué mensaje envías a {name}?"
+        options = [
+            "Enviar mensaje motivador",
+            "Mandar chisme divertido",
+            "Pedir ayuda con tarea",
+            "Invitar a comer después",
+        ]
+        self.message_prompt = DecisionPrompt("Red social", question, options, self.font_overlay, self.font_overlay_small)
+
+    def _resolve_message_choice(self, selection: Optional[str]) -> None:
+        target = self.message_prompt_target
+        self.message_prompt_target = None
+        if not selection or not target:
+            self._set_message("Mensaje cancelado", 1.0)
+            self.player.note_interaction("Cancelaste el mensaje")
+            return
+        name = target["name"]
+        entity = target.get("entity")
+        response = ""
+        out_text = ""
+        if selection == "Enviar mensaje motivador":
+            out_text = "¡Tú puedes con los pendientes de hoy!"
+            response = random.choice([
+                "Gracias, justo necesitaba ese ánimo",
+                "¡Eso! Ahora sí voy motivado",
+            ])
+            self.player.adjust_social(+6)
+            self.player.adjust_relationship(name, +5)
+            self.player.note_interaction(f"Animaste a {name}")
+        elif selection == "Mandar chisme divertido":
+            out_text = "¿Supiste lo que pasó en la cafetería?"
+            if random.random() < 0.45:
+                response = random.choice([
+                    "No estoy para chismes ahora",
+                    "Mejor concéntrate en tus tareas",
+                ])
+                self.player.adjust_social(-4)
+                self.player.adjust_relationship(name, -3)
+                self.player.take_damage(1.0)
+            else:
+                response = random.choice([
+                    "Jajaja, cuéntame más",
+                    "¡Qué risa! Gracias por avisar",
+                ])
+                self.player.adjust_social(+4)
+                self.player.adjust_relationship(name, +2)
+        elif selection == "Pedir ayuda con tarea":
+            out_text = "¿Me compartes tus apuntes para la tarea?"
+            if random.random() < 0.3:
+                response = random.choice([
+                    "Lo siento, aún no la termino",
+                    "Estoy ocupado, luego te aviso",
+                ])
+                self.player.adjust_social(-2)
+                self.player.adjust_relationship(name, -2)
+                self.player.note_interaction(f"{name} no pudo ayudarte")
+            else:
+                response = random.choice([
+                    "Claro, te los mando en un rato",
+                    "Sí, veamos después de clases",
+                ])
+                self.player.adjust_social(+5)
+                self.player.adjust_relationship(name, +4)
+                self.player.adjust_grades(+3)
+        elif selection == "Invitar a comer después":
+            out_text = "¿Vamos a comer algo después de clase?"
+            if random.random() < 0.2:
+                response = random.choice([
+                    "No puedo, tengo mil pendientes",
+                    "Hoy no, quizá mañana",
+                ])
+                self.player.adjust_social(-2)
+                self.player.adjust_relationship(name, -2)
+            else:
+                response = random.choice([
+                    "¡Sí! Me hace falta un descanso",
+                    "Va, nos vemos en la cafetería",
+                ])
+                self.player.adjust_social(+6)
+                self.player.adjust_relationship(name, +3)
+                self.player.restore_hunger(+10)
+        else:
+            self._set_message("Mensaje sin enviar", 1.0)
+            return
+
+        self.player.add_social_message(name, out_text, outbound=True)
+        if response:
+            self.player.add_social_message(name, response)
+            self.player.push_alert(f"{name}: {response}")
+        if entity and hasattr(entity, "request_interaction"):
+            entity.request_interaction(lambda: self.player.rect.center, duration=4.0)
+        self._set_message(f"Mensaje enviado a {name}", 1.8)
+        self._add_activity_marker(f"Mensaje a {name}")
+
+    def _choose_message_target(self) -> Optional[dict[str, object]]:
+        player_center = pygame.Vector2(self.player.rect.center)
+        best = None
+        best_dist = None
+        for entity in list(self.npcs) + [agent for agent in self.specialists if getattr(agent, "visible", True)]:
+            center = pygame.Vector2(entity.rect.center)
+            dist = player_center.distance_to(center)
+            if dist <= 480:
+                if best is None or dist < best_dist:
+                    best = entity
+                    best_dist = dist
+        if best:
+            return {"name": getattr(best, "name", "Contacto"), "entity": best}
+        top = self.player.top_relationships(1)
+        if top:
+            return {"name": top[0][0], "entity": None}
+        if self.npcs:
+            npc = random.choice(self.npcs)
+            return {"name": npc.name, "entity": npc}
+        return None
+
+    def _build_room_activity_map(self) -> dict[str, set[str]]:
+        mapping: dict[str, set[str]] = {}
+        for room in getattr(self.map, "rooms", []):
+            name = room.get("name")
+            if not name:
+                continue
+            tags = set(tag.lower() for tag in room.get("tags", []))
+            layer_name = (room.get("layer") or "").lower()
+            tags.update(layer_name.replace("-", " ").replace("_", " ").split())
+            for token in name.lower().replace("-", " ").replace("_", " ").split():
+                if len(token) >= 3:
+                    tags.add(token)
+            props = room.get("props") or {}
+            for key in ("category", "focus", "tema", "type", "area"):
+                value = props.get(key)
+                if isinstance(value, str):
+                    for part in value.replace("/", " ").replace(",", " ").split():
+                        token = part.strip().lower()
+                        if len(token) >= 3:
+                            tags.add(token)
+            mapping[name] = tags
+        return mapping
+
+    def _room_tags(self, room_name: Optional[str]) -> set[str]:
+        if not room_name:
+            return set()
+        tags = set(self.room_activity_map.get(room_name, set()))
+        if not tags and hasattr(self.map, "room_tags"):
+            tags.update(tag.lower() for tag in self.map.room_tags(room_name))
+        return tags
+
+    def _templates_for_room(self, room_name: Optional[str]) -> list[dict[str, object]]:
+        base = [
+            {"name": "Apoyo académico urgente", "planner_category": "Apoyo académico", "penalty": 10, "reward": {"grades": 5}},
+            {"name": "Montar taller relámpago", "planner_category": "Montar taller", "penalty": 9, "reward": {"grades": 3, "social": 4}},
+            {"name": "Plan rápido de seguridad", "planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 4}},
+            {"name": "Comer algo rápido", "type": "food", "penalty": 8, "reward": {"hunger": 35}},
+            {"name": "Charla con aliados", "type": "social", "penalty": 9, "reward": {"social": 9}},
+        ]
+
+        templates = [dict(tpl) for tpl in base]
+        tags = self._room_tags(room_name)
+
+        def with_room(title: str, payload: dict[str, object]) -> dict[str, object]:
+            tpl = dict(payload)
+            tpl["name"] = title if not room_name else f"{title} en {room_name}"
+            return tpl
+
+        if tags:
+            if any(tag in tags for tag in ("cafeteria", "comedor", "food", "cafe")):
+                templates.append(with_room("Break en la cafetería", {"type": "food", "penalty": 7, "reward": {"hunger": 40, "social": 4}}))
+                templates.append(with_room("Servicio de bandejas", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5}}))
+            if any(tag in tags for tag in ("laboratorio", "lab", "ciencia", "ingenieria")):
+                templates.append(with_room("Experimento guiado", {"planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 6}}))
+                templates.append(with_room("Mantenimiento seguro", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 3}}))
+            if any(tag in tags for tag in ("biblioteca", "library", "lectura", "estudio")):
+                templates.append(with_room("Club de lectura", {"planner_category": "Apoyo académico", "penalty": 7, "reward": {"grades": 5, "social": 2}}))
+            if any(tag in tags for tag in ("gimnasio", "deporte", "cancha", "pista")):
+                templates.append(with_room("Entrenamiento express", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 5, "grades": 1}}))
+            if any(tag in tags for tag in ("auditorio", "teatro", "arte", "musica", "danza")):
+                templates.append(with_room("Ensayo creativo", {"planner_category": "Montar taller", "penalty": 7, "reward": {"social": 6}}))
+            if any(tag in tags for tag in ("seguridad", "guardia", "administracion", "prefectura")):
+                templates.append(with_room("Simulacro coordinado", {"planner_category": "Plan de seguridad", "penalty": 8, "reward": {"social": 5}}))
+            if any(tag in tags for tag in ("residencia", "dormitorio", "descanso", "salon")):
+                templates.append(with_room("Ronda de bienestar", {"type": "social", "penalty": 8, "reward": {"social": 8}}))
+
+        if room_name and not any(room_name in tpl["name"] for tpl in templates):
+            templates.append(with_room("Actividad rápida", {"planner_category": "Apoyo académico", "penalty": 8, "reward": {"grades": 4}}))
+
+        unique: list[dict[str, object]] = []
+        seen_names: set[str] = set()
+        for tpl in templates:
+            name_tpl = tpl.get("name")
+            if name_tpl in seen_names:
+                continue
+            seen_names.add(name_tpl)
+            unique.append(tpl)
+        return unique
 
 class MenuScene(Scene):
     def __init__(self, game):

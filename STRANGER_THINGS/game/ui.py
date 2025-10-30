@@ -15,6 +15,8 @@ from settings import (
     KEY_INTERACT,
     KEY_INVENTORY,
     KEY_ACTION_RUSH,
+    KEY_FIGHT,
+    KEY_MESSAGE,
 )
 
 class Button:
@@ -168,6 +170,17 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
             panel.blit(entry_surf, (28, y))
             y += entry_surf.get_height() + 2
 
+    feed = list(getattr(player, "social_feed", []))
+    if feed:
+        y += 8
+        feed_title = small.render("Red social", True, WHITE)
+        panel.blit(feed_title, (18, y))
+        y += feed_title.get_height() + 2
+        for entry in feed[:4]:
+            entry_surf = tiny.render(entry, True, WHITE)
+            panel.blit(entry_surf, (24, y))
+            y += entry_surf.get_height() + 2
+
     tasks = task_log or []
     if tasks:
         y += 10
@@ -175,7 +188,11 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
         panel.blit(tasks_title, (18, y))
         y += tasks_title.get_height() + 4
         for task in tasks[-5:]:
-            desc = tiny.render(task["name"], True, WHITE)
+            label = task["name"]
+            room_label = task.get("room")
+            if room_label:
+                label = f"{label} @ {room_label}"
+            desc = tiny.render(label, True, WHITE)
             panel.blit(desc, (24, y))
             y += desc.get_height() + 1
             status = tiny.render(task.get("status", ""), True, WHITE)
@@ -191,6 +208,8 @@ def draw_hud(surface, player, planner_status=None, task_log=None):
         f"Interactuar: {KEY_INTERACT.upper()} / ENTER",
         f"Inventario: {KEY_INVENTORY.upper()}",
         f"Ráfaga de acciones: {KEY_ACTION_RUSH.upper()}",
+        f"Iniciar pelea: {KEY_FIGHT.upper()}",
+        f"Mensajes: {KEY_MESSAGE.upper()}",
         "ESC: Menú / salir",
     ]
     for text in controls_lines:

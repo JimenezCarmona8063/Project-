@@ -118,6 +118,11 @@ class Character(Entity):
             return False
         return True
 
+    def take_damage(self, amount: float) -> None:
+        if amount <= 0:
+            return
+        self.hp = max(0.0, self.hp - float(amount))
+
     def assign_action(self, action, target=None):
         self.current_action = action
         self.action_timer = 0.0
@@ -282,6 +287,7 @@ class Player(Character):
         self._last_alert: Optional[str] = None
         self.pending_greeting: Optional[str] = None
         self.idle_time = 0.0
+        self.social_feed: deque[str] = deque(maxlen=10)
 
     def handle_input(self, keys):
         self.vx = (keys.get("right", False) - keys.get("left", False)) * self.speed
@@ -353,7 +359,7 @@ class Player(Character):
         elif delta > 0:
             self.note_interaction("Recuperaste calificaciones")
         if self.grades <= 0:
-            self.hp = max(0.0, self.hp - 8.0)
+            self.take_damage(3.5)
 
     def adjust_social(self, delta: float) -> None:
         self.social_health = max(0.0, min(100.0, self.social_health + delta))
@@ -362,7 +368,7 @@ class Player(Character):
         elif delta > 0:
             self.note_interaction("Tu vida social mejora")
         if self.social_health <= 0:
-            self.hp = max(0.0, self.hp - 6.0)
+            self.take_damage(3.0)
         self._update_mood()
 
     def restore_hunger(self, amount: float) -> None:
@@ -371,14 +377,14 @@ class Player(Character):
             self.note_interaction("Te alimentaste")
 
     def _update_needs(self, dt: float) -> None:
-        decay = dt * 1.6
+        decay = dt * 0.9
         self.hunger = max(0.0, self.hunger - decay)
         if self.hunger <= 35:
             self.push_alert("Necesitas comer algo")
         if self.hunger <= 0:
-            self.hp = max(0.0, self.hp - dt * 10.0)
+            self.take_damage(dt * 5.0)
         if self.idle_time > 12.0:
-            self.hp = max(0.0, self.hp - dt * 8.0)
+            self.take_damage(dt * 3.5)
             self.push_alert("Si no haces nada perderás energía")
         if self.hp <= 0:
             self.push_alert("Colapsaste por agotamiento")
@@ -395,9 +401,22 @@ class Player(Character):
             self.note_interaction(f"Saludaste a {name}")
         else:
             self.adjust_social(-12)
-            self.hp = max(0.0, self.hp - 5.0)
+            self.take_damage(3.5)
             self.note_interaction(f"Ignoraste a {name}")
         self.pending_greeting = None
+
+    def add_social_message(self, author: str, text: str, outbound: bool = False) -> None:
+        if outbound:
+            entry = f"Tú -> {author}: {text}"
+        else:
+            entry = f"{author}: {text}"
+            self.note_interaction(f"Mensaje de {author}")
+        self.social_feed.appendleft(entry)
+
+    def take_damage(self, amount: float) -> None:
+        super().take_damage(amount)
+        if amount > 0:
+            self.push_alert("Tu salud bajó")
 
 
 class NPC(Character):

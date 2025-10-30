@@ -122,11 +122,13 @@ class TmxMap:
                     or str(props.get("room", "")).lower() in ("1", "true", "yes")
                 )
                 if is_room:
+                    tags = self._extract_tags(name, layer.name, props)
                     self.rooms.append({
                         "name": name,
                         "layer": layer.name,
                         "rect": rect,
                         "props": props,
+                        "tags": tags,
                     })
                     continue
 
@@ -143,6 +145,30 @@ class TmxMap:
                         "dest": props.get("dest") or props.get("room") or props.get("target") or props.get("dest_room"),
                         "props": props,
                     })
+
+    def _extract_tags(self, name: str, layer_name: str, props: dict) -> List[str]:
+        tags: set[str] = set()
+
+        def _tokenise(text: str) -> None:
+            if not text:
+                return
+            for chunk in str(text).replace("/", " ").replace("-", " ").replace(",", " ").split():
+                word = chunk.strip().lower()
+                if len(word) >= 3:
+                    tags.add(word)
+
+        _tokenise(name or "")
+        _tokenise(layer_name or "")
+
+        for key in ("tags", "tag", "categoria", "category", "focus", "type", "role"):
+            value = props.get(key)
+            if isinstance(value, str):
+                _tokenise(value)
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    _tokenise(v)
+
+        return sorted(tags)
 
     # ------------------- Render -------------------
     def draw(self, surface: pygame.Surface, camera) -> None:
@@ -192,6 +218,15 @@ class TmxMap:
             if room.get("name") == name:
                 return room
         return None
+
+    def room_tags(self, name: Optional[str]) -> List[str]:
+        room = self.get_room(name)
+        if not room:
+            return []
+        tags = room.get("tags")
+        if isinstance(tags, (list, tuple)):
+            return list(tags)
+        return []
 
     def room_for_rect(self, rect: pygame.Rect):
         center = rect.center
