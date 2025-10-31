@@ -7,7 +7,7 @@ from settings import (
     KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_INTERACT, KEY_INVENTORY,
     DEFAULT_MAP_CSV, DIALOGUES_JSON, TITLE_IMAGE, UI_FONT_FILE,
     MUSIC_FILE, HOVER_SFX, DEFAULT_MUSIC_VOL, DEFAULT_SFX_VOL,
-    WINE, WINE_HOV, RED  
+    WINE, WINE_HOV, RED, MAP_ZOOM
 )
 
 from core.engine import Camera2D, Scene, draw_text
@@ -47,7 +47,7 @@ class PlayScene(Scene):
 
         # 2) Cámara al tamaño del mapa
         # world_w, world_h vienen de tu mapa TMX
-        self.camera = Camera2D(*self.map.world_size(), *self.game.screen.get_size())
+        self.camera = Camera2D(*self.map.world_size(), *self.game.screen.get_size(), zoom=MAP_ZOOM)
 
 
         # 3) Player en el spawn del TMX

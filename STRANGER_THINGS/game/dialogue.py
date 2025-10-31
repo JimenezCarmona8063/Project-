@@ -1,6 +1,13 @@
 # game/dialogue.py — cajita de diálogos con páginas
 import pygame
-from settings import WIDTH, HEIGHT
+from settings import WIDTH, HEIGHT, UI_FONT_FILE
+
+
+def _load_font(size: int, bold: bool = False) -> pygame.font.Font:
+    try:
+        return pygame.font.Font(UI_FONT_FILE, size)
+    except Exception:
+        return pygame.font.SysFont("arial", size, bold=bold)
 
 class DialogueBox:
     def __init__(self, lines, speaker=None):
@@ -8,8 +15,9 @@ class DialogueBox:
         self.speaker = speaker
         self.idx = 0
         self.done = False
-        self.font = pygame.font.SysFont("arial", 22)
-        self.font_name = pygame.font.SysFont("arial", 20, bold=True)
+        self.font = _load_font(24)
+        self.font_name = _load_font(26, bold=True)
+        self.prompt_font = _load_font(18)
 
     def handle_event(self, event):
         if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONUP):
@@ -21,8 +29,11 @@ class DialogueBox:
         w, h = surface.get_size()
         ph = max(120, h//5)
         rect = pygame.Rect(10, h - ph - 10, w - 20, ph)
-        pygame.draw.rect(surface, (0,0,0), rect, border_radius=12)
-        pygame.draw.rect(surface, (255,255,255), rect, width=2, border_radius=12)
+
+        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(panel, (12, 12, 18, 220), panel.get_rect(), border_radius=18)
+        pygame.draw.rect(panel, (255, 255, 255, 90), panel.get_rect(), width=3, border_radius=18)
+        surface.blit(panel, rect.topleft)
 
         y = rect.y + 12
         if self.speaker:
@@ -32,6 +43,10 @@ class DialogueBox:
 
         text = self.lines[self.idx] if self.idx < len(self.lines) else ""
         self._blit_wrapped(surface, text, rect.x + 12, y, rect.w - 24)
+
+        if not self.done:
+            prompt = self.prompt_font.render("Pulsa para continuar", True, (200, 220, 255))
+            surface.blit(prompt, (rect.right - prompt.get_width() - 16, rect.bottom - prompt.get_height() - 14))
 
     def _blit_wrapped(self, surface, text, x, y, maxw):
         words = str(text).split()
