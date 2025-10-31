@@ -8,6 +8,8 @@ WIDTH, HEIGHT = 960, 540
 FPS = 60
 TITLE = "UP Adventure — Starter Kit (Top-Down)"
 TILE = 32
+# Factor de zoom aplicado a la cámara principal del mapa
+MAP_ZOOM = 1.4
 
 # -----------------------------
 # Colores

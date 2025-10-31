@@ -37,6 +37,9 @@ class TmxMap:
         self.tile_w = self.tmx.tilewidth
         self.tile_h = self.tmx.tileheight
 
+        # caché simple para superficies escaladas según zoom
+        self._scale_cache: dict[tuple[int, float], pygame.Surface] = {}
+
         # Colisiones
         self.collision_rects: list[pygame.Rect] = []
         self._load_collisions()
@@ -96,8 +99,25 @@ class TmxMap:
         return default
 
     # ------------------- Render -------------------
+    def _get_scaled(self, surf: pygame.Surface, zoom: float) -> pygame.Surface:
+        if zoom == 1.0 or surf is None:
+            return surf
+        key = (id(surf), zoom)
+        cached = self._scale_cache.get(key)
+        target_size = (
+            max(1, int(round(surf.get_width() * zoom))),
+            max(1, int(round(surf.get_height() * zoom))),
+        )
+        if cached and cached.get_size() == target_size:
+            return cached
+        scaled = pygame.transform.smoothscale(surf, target_size)
+        self._scale_cache[key] = scaled
+        return scaled
+
     def draw(self, surface: pygame.Surface, camera) -> None:
         camx, camy, cw, ch = camera.view_rect()
+        zoom = getattr(camera, "zoom", 1.0)
+        project = getattr(camera, "project_point", None)
 
         for layer in self.tmx.layers:
             if not getattr(layer, "visible", True):
@@ -109,7 +129,11 @@ class TmxMap:
                 if img:
                     ox = int(getattr(layer, "offsetx", 0))
                     oy = int(getattr(layer, "offsety", 0))
-                    surface.blit(img, (ox - camx, oy - camy))
+                    if project:
+                        screen_pos = project(ox, oy)
+                    else:
+                        screen_pos = (ox - camx, oy - camy)
+                    surface.blit(self._get_scaled(img, zoom), screen_pos)
 
             # Tile Layer
             elif isinstance(layer, pytmx.TiledTileLayer):
@@ -120,6 +144,9 @@ class TmxMap:
                 end_y = min(self.height_tiles, (camy + ch) // th + 2)
 
                 # Usamos layer.data en lugar de layer.content2d
+                offset_x = int(getattr(layer, "offsetx", 0))
+                offset_y = int(getattr(layer, "offsety", 0))
+
                 for x, y, gid in layer:
                     if x < start_x or x > end_x or y < start_y or y > end_y:
                         continue
@@ -127,7 +154,14 @@ class TmxMap:
                         continue
                     tile_img = self.tmx.get_tile_image_by_gid(gid)
                     if tile_img:
-                        surface.blit(tile_img, (x * tw - camx, y * th - camy))
+                        world_x = x * tw + offset_x
+                        world_y = y * th + offset_y
+                        if project:
+                            screen_x, screen_y = project(world_x, world_y)
+                        else:
+                            screen_x = world_x - camx
+                            screen_y = world_y - camy
+                        surface.blit(self._get_scaled(tile_img, zoom), (screen_x, screen_y))
 
     # ------------------- Debug -------------------
     def debug_draw_collisions(self, surface: pygame.Surface, camera, color=(255, 60, 60)):
