@@ -1,5 +1,7 @@
 # core/tilemap_tmx.py
 import os
+from typing import Dict, List, Optional
+
 import pygame
 from settings import TMX_MAP_FILE, TILE
 
@@ -43,6 +45,11 @@ class TmxMap:
 
         # Spawn del jugador
         self.player_spawn = self._find_player_spawn(default=(self.tile_w, self.tile_h))
+
+        # Salones (object layers) y puertas para ingreso
+        self.rooms: List[Dict] = []
+        self.doors: List[Dict] = []
+        self._load_rooms_and_doors()
 
     # ------------------- Datos del mundo -------------------
     def world_size(self):
@@ -95,6 +102,74 @@ class TmxMap:
                         return (int(obj.x), int(obj.y))
         return default
 
+    def _load_rooms_and_doors(self) -> None:
+        for layer in self.tmx.layers:
+            if not isinstance(layer, pytmx.TiledObjectGroup):
+                continue
+            for obj in layer:
+                props = getattr(obj, "properties", {}) or {}
+                name = obj.name or props.get("name") or f"{layer.name}_{getattr(obj, 'id', len(self.rooms)+1)}"
+                rect = pygame.Rect(
+                    int(obj.x),
+                    int(obj.y),
+                    int(getattr(obj, "width", self.tile_w) or self.tile_w),
+                    int(getattr(obj, "height", self.tile_h) or self.tile_h),
+                )
+                obj_type = (getattr(obj, "type", "") or "").lower()
+                is_room = (
+                    obj_type == "room"
+                    or "room" in (name or "").lower()
+                    or str(props.get("room", "")).lower() in ("1", "true", "yes")
+                )
+                if is_room:
+                    tags = self._extract_tags(name, layer.name, props)
+                    self.rooms.append({
+                        "name": name,
+                        "layer": layer.name,
+                        "rect": rect,
+                        "props": props,
+                        "tags": tags,
+                    })
+                    continue
+
+                is_door = (
+                    obj_type == "door"
+                    or "door" in (name or "").lower()
+                    or str(props.get("door", "")).lower() in ("1", "true", "yes")
+                )
+                if is_door:
+                    self.doors.append({
+                        "name": name,
+                        "layer": layer.name,
+                        "rect": rect,
+                        "dest": props.get("dest") or props.get("room") or props.get("target") or props.get("dest_room"),
+                        "props": props,
+                    })
+
+    def _extract_tags(self, name: str, layer_name: str, props: dict) -> List[str]:
+        tags: set[str] = set()
+
+        def _tokenise(text: str) -> None:
+            if not text:
+                return
+            for chunk in str(text).replace("/", " ").replace("-", " ").replace(",", " ").split():
+                word = chunk.strip().lower()
+                if len(word) >= 3:
+                    tags.add(word)
+
+        _tokenise(name or "")
+        _tokenise(layer_name or "")
+
+        for key in ("tags", "tag", "categoria", "category", "focus", "type", "role"):
+            value = props.get(key)
+            if isinstance(value, str):
+                _tokenise(value)
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    _tokenise(v)
+
+        return sorted(tags)
+
     # ------------------- Render -------------------
     def draw(self, surface: pygame.Surface, camera) -> None:
         camx, camy, cw, ch = camera.view_rect()
@@ -134,3 +209,51 @@ class TmxMap:
         camx, camy, _, _ = camera.view_rect()
         for r in self.collision_rects:
             pygame.draw.rect(surface, color, pygame.Rect(r.x - camx, r.y - camy, r.w, r.h), 2)
+
+    # ------------------- Rooms helpers -------------------
+    def get_room(self, name: Optional[str]):
+        if not name:
+            return None
+        for room in self.rooms:
+            if room.get("name") == name:
+                return room
+        return None
+
+    def room_tags(self, name: Optional[str]) -> List[str]:
+        room = self.get_room(name)
+        if not room:
+            return []
+        tags = room.get("tags")
+        if isinstance(tags, (list, tuple)):
+            return list(tags)
+        return []
+
+    def room_for_rect(self, rect: pygame.Rect):
+        center = rect.center
+        for room in self.rooms:
+            room_rect = room.get("rect")
+            if isinstance(room_rect, pygame.Rect) and room_rect.collidepoint(center):
+                return room
+        return None
+
+    def door_for_rect(self, rect: pygame.Rect):
+        for door in self.doors:
+            door_rect = door.get("rect")
+            if isinstance(door_rect, pygame.Rect) and door_rect.colliderect(rect):
+                return door
+        return None
+
+    def closest_room_to_rect(self, rect: pygame.Rect):
+        best = None
+        best_dist = None
+        center = pygame.Vector2(rect.center)
+        for room in self.rooms:
+            room_rect = room.get("rect")
+            if not isinstance(room_rect, pygame.Rect):
+                continue
+            room_center = pygame.Vector2(room_rect.center)
+            dist = room_center.distance_to(center)
+            if best is None or dist < best_dist:
+                best = room
+                best_dist = dist
+        return best

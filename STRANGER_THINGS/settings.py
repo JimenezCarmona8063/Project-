@@ -4,7 +4,11 @@ import os
 # -----------------------------
 # Pantalla / Juego base
 # -----------------------------
-WIDTH, HEIGHT = 960, 540
+WIDTH, HEIGHT = 1600, 900  # área jugable principal (mapa)
+HUD_PANEL_WIDTH = 360
+WINDOW_WIDTH = WIDTH + HUD_PANEL_WIDTH
+WINDOW_HEIGHT = HEIGHT
+FULLSCREEN = True
 FPS = 60
 TITLE = "UP Adventure — Starter Kit (Top-Down)"
 TILE = 32
@@ -36,6 +40,10 @@ KEY_LEFT = "a"
 KEY_RIGHT = "d"
 KEY_INTERACT = "e"
 KEY_INVENTORY = "i"
+KEY_ACTION_RUSH = "q"
+KEY_FIGHT = "f"
+KEY_MESSAGE = "m"
+KEY_HELP = "h"
 
 # -----------------------------
 # Gameplay base
